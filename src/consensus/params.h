@@ -1,116 +1,96 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2015 The Bitcoin Core developers
+// Copyright (c) 2009-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_CONSENSUS_PARAMS_H
 #define BITCOIN_CONSENSUS_PARAMS_H
 
-#include "uint256.h"
-#include <map>
-#include <string>
+#include <uint256.h>
+#include <llmq/params.h>
+
+#include <chrono>
+#include <limits>
+#include <vector>
 
 namespace Consensus {
 
-enum DeploymentPos
-{
+/**
+ * A buried deployment is one where the height of the activation has been hardcoded into
+ * the client implementation long after the consensus change has activated. See BIP 90.
+ */
+enum BuriedDeployment : int16_t {
+    // buried deployments get negative values to avoid overlap with DeploymentPos
+    DEPLOYMENT_HEIGHTINCB = std::numeric_limits<int16_t>::min(),
+    DEPLOYMENT_DERSIG,
+    DEPLOYMENT_CLTV,
+    DEPLOYMENT_BIP147,
+    DEPLOYMENT_CSV,
+    DEPLOYMENT_DIP0001,
+    DEPLOYMENT_DIP0003,
+    DEPLOYMENT_DIP0008,
+    DEPLOYMENT_DIP0020,
+    DEPLOYMENT_DIP0024,
+    DEPLOYMENT_BRR,
+    DEPLOYMENT_V19,
+    DEPLOYMENT_V20,
+    DEPLOYMENT_MN_RR,
+    DEPLOYMENT_WITHDRAWALS,
+    DEPLOYMENT_IPV4_OPTIONAL, // Masternodes may operate without IPv4
+};
+constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_IPV4_OPTIONAL; }
+
+enum DeploymentPos : uint16_t {
     DEPLOYMENT_TESTDUMMY,
-    DEPLOYMENT_CSV, // Deployment of BIP68, BIP112, and BIP113.
-    DEPLOYMENT_DIP0001, // Deployment of DIP0001 and lower transaction fees.
-    DEPLOYMENT_BIP147, // Deployment of BIP147 (NULLDUMMY)
-    DEPLOYMENT_DIP0003, // Deployment of DIP0002 and DIP0003 (txv3 and deterministic MN lists)
-    DEPLOYMENT_DIP0008, // Deployment of ChainLock enforcement
-    // NOTE: Also add new deployments to VersionBitsDeploymentInfo in versionbits.cpp
+    DEPLOYMENT_V24,         // Deployment of doubling withdrawal limit, extended addresses
+    DEPLOYMENT_EVO_SHARES,  // Deployment of EvoNode shared collateral and multiple owner payouts
+    // NOTE: Also add new deployments to VersionBitsDeploymentInfo in deploymentinfo.cpp
     MAX_VERSION_BITS_DEPLOYMENTS
 };
+constexpr bool ValidDeployment(DeploymentPos dep) { return dep < MAX_VERSION_BITS_DEPLOYMENTS; }
 
 /**
  * Struct for each individual consensus rule change using BIP9.
  */
 struct BIP9Deployment {
     /** Bit position to select the particular bit in nVersion. */
-    int bit;
+    int bit{28};
     /** Start MedianTime for version bits miner confirmation. Can be a date in the past */
-    int64_t nStartTime;
+    int64_t nStartTime{NEVER_ACTIVE};
     /** Timeout/expiry MedianTime for the deployment attempt. */
-    int64_t nTimeout;
+    int64_t nTimeout{NEVER_ACTIVE};
+    /** If lock in occurs, delay activation until at least this block
+     *  height.  Note that activation will only occur on a retarget
+     *  boundary.
+     */
+    int min_activation_height{0};
     /** The number of past blocks (including the block under consideration) to be taken into account for locking in a fork. */
     int64_t nWindowSize{0};
-    /** A number of blocks, in the range of 1..nWindowSize, which must signal for a fork in order to lock it in. */
-    int64_t nThreshold{0};
-};
+    /** A starting number of blocks, in the range of 1..nWindowSize, which must signal for a fork in order to lock it in. */
+    int64_t nThresholdStart{0};
+    /** A minimum number of blocks, in the range of 1..nWindowSize, which must signal for a fork in order to lock it in. */
+    int64_t nThresholdMin{0};
+    /** A coefficient which adjusts the speed a required number of signaling blocks is decreasing from nThresholdStart to nThresholdMin at with each period. */
+    int64_t nFalloffCoeff{0};
+    /** This value is used for forks activated by masternodes.
+      * false means it is a regular fork, no masternodes confirmation is needed.
+      * true means that a signalling of masternodes is expected first to determine a height when miners signals are matter.
+      */
+    bool useEHF{false};
 
-enum LLMQType : uint8_t
-{
-    LLMQ_NONE = 0xff,
+    /** Constant for nTimeout very far in the future. */
+    static constexpr int64_t NO_TIMEOUT = std::numeric_limits<int64_t>::max();
 
-    LLMQ_50_60 = 1, // 50 members, 30 (60%) threshold, one per hour
-    LLMQ_400_60 = 2, // 400 members, 240 (60%) threshold, one every 12 hours
-    LLMQ_400_85 = 3, // 400 members, 340 (85%) threshold, one every 24 hours
+    /** Special value for nStartTime indicating that the deployment is always active.
+     *  This is useful for testing, as it means tests don't need to deal with the activation
+     *  process (which takes at least 3 BIP9 intervals). Only tests that specifically test the
+     *  behaviour during activation cannot use this. */
+    static constexpr int64_t ALWAYS_ACTIVE = -1;
 
-    // for testing only
-    LLMQ_5_60 = 100, // 5 members, 3 (60%) threshold, one per hour
-};
-
-// Configures a LLMQ and its DKG
-// See https://github.com/dashpay/dips/blob/master/dip-0006.md for more details
-struct LLMQParams {
-    LLMQType type;
-
-    // not consensus critical, only used in logging, RPC and UI
-    std::string name;
-
-    // the size of the quorum, e.g. 50 or 400
-    int size;
-
-    // The minimum number of valid members after the DKK. If less members are determined valid, no commitment can be
-    // created. Should be higher then the threshold to allow some room for failing nodes, otherwise quorum might end up
-    // not being able to ever created a recovered signature if more nodes fail after the DKG
-    int minSize;
-
-    // The threshold required to recover a final signature. Should be at least 50%+1 of the quorum size. This value
-    // also controls the size of the public key verification vector and has a large influence on the performance of
-    // recovery. It also influences the amount of minimum messages that need to be exchanged for a single signing session.
-    // This value has the most influence on the security of the quorum. The number of total malicious masternodes
-    // required to negatively influence signing sessions highly correlates to the threshold percentage.
-    int threshold;
-
-    // The interval in number blocks for DKGs and the creation of LLMQs. If set to 24 for example, a DKG will start
-    // every 24 blocks, which is approximately once every hour.
-    int dkgInterval;
-
-    // The number of blocks per phase in a DKG session. There are 6 phases plus the mining phase that need to be processed
-    // per DKG. Set this value to a number of blocks so that each phase has enough time to propagate all required
-    // messages to all members before the next phase starts. If blocks are produced too fast, whole DKG sessions will
-    // fail.
-    int dkgPhaseBlocks;
-
-    // The starting block inside the DKG interval for when mining of commitments starts. The value is inclusive.
-    // Starting from this block, the inclusion of (possibly null) commitments is enforced until the first non-null
-    // commitment is mined. The chosen value should be at least 5 * dkgPhaseBlocks so that it starts right after the
-    // finalization phase.
-    int dkgMiningWindowStart;
-
-    // The ending block inside the DKG interval for when mining of commitments ends. The value is inclusive.
-    // Choose a value so that miners have enough time to receive the commitment and mine it. Also take into consideration
-    // that miners might omit real commitments and revert to always including null commitments. The mining window should
-    // be large enough so that other miners have a chance to produce a block containing a non-null commitment. The window
-    // should at the same time not be too large so that not too much space is wasted with null commitments in case a DKG
-    // session failed.
-    int dkgMiningWindowEnd;
-
-    // In the complaint phase, members will vote on other members being bad (missing valid contribution). If at least
-    // dkgBadVotesThreshold have voted for another member to be bad, it will considered to be bad by all other members
-    // as well. This serves as a protection against late-comers who send their contribution on the bring of
-    // phase-transition, which would otherwise result in inconsistent views of the valid members set
-    int dkgBadVotesThreshold;
-
-    // Number of quorums to consider "active" for signing sessions
-    int signingActiveQuorumCount;
-
-    // Used for inter-quorum communication. This is the number of quorums for which we should keep old connections. This
-    // should be at least one more then the active quorums set.
-    int keepOldConnections;
+    /** Special value for nStartTime indicating that the deployment is never active.
+     *  This is useful for integrating the code changes for a new feature
+     *  prior to deploying it on some or all networks. */
+    static constexpr int64_t NEVER_ACTIVE = -2;
 };
 
 /**
@@ -120,6 +100,7 @@ struct Params {
     uint256 hashGenesisBlock;
     uint256 hashDevnetGenesisBlock;
     int nSubsidyHalvingInterval;
+    /** Block height at which BIP16 becomes active */
     int nMasternodePaymentsStartBlock;
     int nMasternodePaymentsIncreaseBlock;
     int nMasternodePaymentsIncreasePeriod; // in blocks
@@ -131,6 +112,7 @@ struct Params {
     int nSuperblockStartBlock;
     uint256 nSuperblockStartHash;
     int nSuperblockCycle; // in blocks
+    int nSuperblockMaturityWindow; // in blocks
     int nGovernanceMinQuorum; // Min absolute vote count to trigger an action
     int nGovernanceFilterElements;
     int nMasternodeMinimumConfirmations;
@@ -141,17 +123,48 @@ struct Params {
     int BIP65Height;
     /** Block height at which BIP66 becomes active */
     int BIP66Height;
+    // Deployment of BIP147 (NULLDUMMY)
+    int BIP147Height;
+    /** Block height at which CSV (BIP68, BIP112 and BIP113) becomes active */
+    int CSVHeight;
     /** Block height at which DIP0001 becomes active */
     int DIP0001Height;
-    /** Block height at which DIP0003 becomes active */
+    /** Block height at which DIP0002 and DIP0003 (txv3 and deterministic MN lists) becomes active */
     int DIP0003Height;
     /** Block height at which DIP0003 becomes enforced */
     int DIP0003EnforcementHeight;
     uint256 DIP0003EnforcementHash;
+    /** Block height at which DIP0008 becomes active */
+    int DIP0008Height;
+    /** Block height at which BRR (Block Reward Reallocation) becomes active */
+    int BRRHeight;
+    /** Block height at which DIP0020, DIP0021 and LLMQ_100_67 quorums become active */
+    int DIP0020Height;
+    /** Block height at which DIP0024 (Quorum Rotation) and decreased governance proposal fee becomes active */
+    int DIP0024Height;
+    /** Block height at which the first DIP0024 quorum was mined */
+    int DIP0024QuorumsHeight;
+    /** Block height at which V19 (Basic BLS and EvoNodes) becomes active */
+    int V19Height;
+    /** Block height at which V20 (Deployment of EHF, LLMQ Randomness Beacon) becomes active */
+    int V20Height;
+    /** Block height at which MN_RR (Deployment of Masternode Reward Location Reallocation) becomes active */
+    int MN_RRHeight;
+    /** Block height at which WITHDRAWALS (Deployment of quorum fix and higher limits for withdrawals) becomes active */
+    int WithdrawalsHeight;
+    /** Block height from which a masternode's primary addresses no longer need to be IPv4.
+     *  std::numeric_limits<int>::max() while no activation is scheduled. A placeholder: a version bits (EHF)
+     *  deployment replacing it must stay always active on testnet and devnets. The mainnet primary port pins
+     *  don't depend on it, so a first entry that can't use the standard port (such as I2P, which uses port 0)
+     *  stays invalid there. */
+    int IPv4OptionalHeight;
+    /** Don't warn about unknown BIP 9 activations below this height.
+     * This prevents us from warning about the CSV and DIP activations. */
+    int MinBIP9WarningHeight;
     /**
      * Minimum blocks including miner confirmation of the total of nMinerConfirmationWindow blocks in a retargeting period,
      * (nPowTargetTimespan / nPowTargetSpacing) which is also used for BIP9 deployments.
-     * Default BIP9Deployment::nThreshold value for deployments where it's not specified and for unknown deployments.
+     * Default BIP9Deployment::nThresholdStart value for deployments where it's not specified and for unknown deployments.
      * Examples: 1916 for 95%, 1512 for testchains.
      */
     uint32_t nRuleChangeActivationThreshold;
@@ -162,12 +175,24 @@ struct Params {
     uint256 powLimit;
     bool fPowAllowMinDifficultyBlocks;
     bool fPowNoRetargeting;
+    /**
+     * Nominal consensus target spacing. Do not treat it as an exact
+     * user-facing wall-clock ETA: mainnet's observed spacing is about
+     * 2.626 min/block due to the historical DGW off-by-one documented by
+     * DarkGravityWave() in pow.cpp.
+     */
     int64_t nPowTargetSpacing;
     int64_t nPowTargetTimespan;
     int nPowKGWHeight;
     int nPowDGWHeight;
+    std::chrono::seconds PowTargetSpacing() const
+    {
+        return std::chrono::seconds{nPowTargetSpacing};
+    }
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
+    /** The best chain should have at least this much work */
     uint256 nMinimumChainWork;
+    /** By default assume that the signatures in ancestors of this block are valid */
     uint256 defaultAssumeValid;
 
     /** these parameters are only used on devnet and can be configured from the outside */
@@ -175,15 +200,52 @@ struct Params {
     int nHighSubsidyBlocks{0};
     int nHighSubsidyFactor{1};
 
-    std::map<LLMQType, LLMQParams> llmqs;
+    std::vector<LLMQParams> llmqs;
     LLMQType llmqTypeChainLocks;
-    LLMQType llmqTypeInstantSend{LLMQ_NONE};
-};
-} // namespace Consensus
+    LLMQType llmqTypeDIP0024InstantSend{LLMQType::LLMQ_NONE};
+    LLMQType llmqTypePlatform{LLMQType::LLMQ_NONE};
+    LLMQType llmqTypeMnhf{LLMQType::LLMQ_NONE};
 
-// This must be outside of all namespaces. We must also duplicate the forward declaration of is_serializable_enum to
-// avoid inclusion of serialize.h here.
-template<typename T> struct is_serializable_enum;
-template<> struct is_serializable_enum<Consensus::LLMQType> : std::true_type {};
+    int DeploymentHeight(BuriedDeployment dep) const
+    {
+        switch (dep) {
+        case DEPLOYMENT_HEIGHTINCB:
+            return BIP34Height;
+        case DEPLOYMENT_DERSIG:
+            return BIP66Height;
+        case DEPLOYMENT_CLTV:
+            return BIP65Height;
+        case DEPLOYMENT_BIP147:
+            return BIP147Height;
+        case DEPLOYMENT_CSV:
+            return CSVHeight;
+        case DEPLOYMENT_DIP0001:
+            return DIP0001Height;
+        case DEPLOYMENT_DIP0003:
+            return DIP0003Height;
+        case DEPLOYMENT_DIP0008:
+            return DIP0008Height;
+        case DEPLOYMENT_DIP0020:
+            return DIP0020Height;
+        case DEPLOYMENT_DIP0024:
+            return DIP0024Height;
+        case DEPLOYMENT_BRR:
+            return BRRHeight;
+        case DEPLOYMENT_V19:
+            return V19Height;
+        case DEPLOYMENT_V20:
+            return V20Height;
+        case DEPLOYMENT_MN_RR:
+            return MN_RRHeight;
+        case DEPLOYMENT_WITHDRAWALS:
+            return WithdrawalsHeight;
+        case DEPLOYMENT_IPV4_OPTIONAL:
+            return IPv4OptionalHeight;
+        } // no default case, so the compiler can warn about missing cases
+        return std::numeric_limits<int>::max();
+    }
+};
+
+} // namespace Consensus
 
 #endif // BITCOIN_CONSENSUS_PARAMS_H

@@ -30,17 +30,21 @@ SOURCE_LANG = 'dash_en.ts'
 LOCALE_DIR = 'src/qt/locale'
 # Minimum number of messages for translation to be considered at all
 MIN_NUM_MESSAGES = 10
+# Regexp to check for Bitcoin addresses
+ADDRESS_REGEXP = re.compile('([13]|bc1)[a-zA-Z0-9]{30,}')
+# Regexp to check for Dash addresses
+ADDRESS_REGEXP_DASH = re.compile('[X7][a-zA-Z0-9]{30,}')
 
 def check_at_repository_root():
     if not os.path.exists('.git'):
         print('No .git directory found')
         print('Execute this script at the root of the repository', file=sys.stderr)
-        exit(1)
+        sys.exit(1)
 
 def fetch_all_translations():
     if subprocess.call([TX, 'pull', '-f', '-a']):
         print('Error while fetching translations', file=sys.stderr)
-        exit(1)
+        sys.exit(1)
 
 def find_format_specifiers(s):
     '''Find all format specifiers in a string.'''
@@ -52,7 +56,7 @@ def find_format_specifiers(s):
             break
         try:
             specifiers.append(s[percent+1])
-        except:
+        except Exception:
             print('Failed to get specifier')
         pos = percent+2
     return specifiers
@@ -125,6 +129,18 @@ def escape_cdata(text):
     text = text.replace('"', '&quot;')
     return text
 
+def contains_bitcoin_addr(text, errors):
+    if text is not None and ADDRESS_REGEXP.search(text) is not None:
+        errors.append('Translation "%s" contains a bitcoin address. This will be removed.' % (text))
+        return True
+    return False
+
+def contains_dash_addr(text, errors):
+    if text is not None and ADDRESS_REGEXP_DASH.search(text) is not None:
+        errors.append('Translation "%s" contains a Dash address. This will be removed.' % (text))
+        return True
+    return False
+
 def postprocess_translations(reduce_diff_hacks=False):
     print('Checking and postprocessing...')
 
@@ -163,7 +179,8 @@ def postprocess_translations(reduce_diff_hacks=False):
                     if translation is None:
                         continue
                     errors = []
-                    valid = check_format_specifiers(source, translation, errors, numerus)
+                    valid = check_format_specifiers(source, translation, errors, numerus) and not contains_bitcoin_addr(translation, errors)
+                    valid = valid and not contains_dash_addr(translation, errors)
 
                     for error in errors:
                         print('%s: %s' % (filename, error))

@@ -1,14 +1,30 @@
-// Copyright (c) 2018-2019 The Dash Core developers
+// Copyright (c) 2018-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef DASH_CRYPTO_BLS_BATCHVERIFIER_H
 #define DASH_CRYPTO_BLS_BATCHVERIFIER_H
 
-#include "bls.h"
+#include <bls/bls.h>
+#include <random.h>
 
+#include <algorithm>
+#include <array>
 #include <map>
 #include <vector>
+
+//! A secret random nonzero scalar of numBytes bytes (at most 16, so well below the group order). Weighting each
+//! signature and its public key by one makes errors in several signatures unable to cancel out in an aggregate.
+inline CBLSSecretKey MakeBatchVerificationWeight(FastRandomContext& rng, size_t numBytes = 16)
+{
+    assert(numBytes > 0 && numBytes <= 16);
+    std::array<uint8_t, BLS_CURVE_SECKEY_SIZE> bytes{};
+    do {
+        const uint256 rand{rng.rand256()};
+        std::copy(rand.begin(), rand.begin() + numBytes, bytes.end() - numBytes);
+    } while (std::all_of(bytes.begin(), bytes.end(), [](uint8_t b) { return b == 0; }));
+    return CBLSSecretKey{bytes};
+}
 
 template<typename SourceId, typename MessageId>
 class CBLSBatchVerifier
@@ -19,11 +35,14 @@ private:
         uint256 msgHash;
         CBLSSignature sig;
         CBLSPublicKey pubKey;
+        //! sig and pubKey multiplied by the same MakeBatchVerificationWeight()
+        CBLSSignature weightedSig;
+        CBLSPublicKey weightedPubKey;
     };
 
-    typedef std::map<MessageId, Message> MessageMap;
-    typedef typename MessageMap::iterator MessageMapIterator;
-    typedef std::map<SourceId, std::vector<MessageMapIterator>> MessagesBySourceMap;
+    using MessageMap = std::map<MessageId, Message>;
+    using MessageMapIterator = typename MessageMap::iterator;
+    using MessagesBySourceMap = std::map<SourceId, std::vector<MessageMapIterator>>;
 
     bool secureVerification;
     bool perMessageFallback;
@@ -31,6 +50,8 @@ private:
 
     MessageMap messages;
     MessagesBySourceMap messagesBySource;
+
+    FastRandomContext rng;
 
 public:
     std::set<SourceId> badSources;
@@ -48,7 +69,12 @@ public:
     {
         assert(sig.IsValid() && pubKey.IsValid());
 
-        auto it = messages.emplace(msgId, Message{msgId, msgHash, sig, pubKey}).first;
+        auto [it, inserted] = messages.emplace(msgId, Message{msgId, msgHash, sig, pubKey, sig, pubKey});
+        if (inserted) {
+            const CBLSSecretKey weight{MakeBatchVerificationWeight(rng)};
+            it->second.weightedSig.MulInsecure(weight);
+            it->second.weightedPubKey.MulInsecure(weight);
+        }
         messagesBySource[sourceId].emplace_back(it);
 
         if (subBatchSize != 0 && messages.size() >= subBatchSize) {
@@ -61,6 +87,11 @@ public:
     {
         messages.clear();
         messagesBySource.clear();
+    }
+
+    size_t GetUniqueSourceCount() const
+    {
+        return messagesBySource.size();
     }
 
     void Verify()
@@ -77,27 +108,27 @@ public:
         }
 
         // revert to per-source verification
-        for (const auto& p : messagesBySource) {
+        for (const auto& [from, message_map] : messagesBySource) {
             bool batchValid = false;
 
             // no need to verify it again if there was just one source
             if (messagesBySource.size() != 1) {
                 byMessageHash.clear();
-                for (auto it = p.second.begin(); it != p.second.end(); ++it) {
+                for (auto it = message_map.begin(); it != message_map.end(); ++it) {
                     byMessageHash[(*it)->second.msgHash].emplace_back(*it);
                 }
                 batchValid = VerifyBatch(byMessageHash);
             }
             if (!batchValid) {
-                badSources.emplace(p.first);
+                badSources.emplace(from);
 
                 if (perMessageFallback) {
                     // revert to per-message verification
-                    if (p.second.size() == 1) {
+                    if (message_map.size() == 1) {
                         // no need to re-verify a single message
-                        badMessages.emplace(p.second[0]->second.msgId);
+                        badMessages.emplace(message_map[0]->second.msgId);
                     } else {
-                        for (const auto& msgIt : p.second) {
+                        for (const auto& msgIt : message_map) {
                             if (badMessages.count(msgIt->first)) {
                                 // same message might be invalid from different source, so no need to re-verify it
                                 continue;
@@ -129,38 +160,32 @@ private:
 
     bool VerifyBatchInsecure(const std::map<uint256, std::vector<MessageMapIterator>>& byMessageHash)
     {
-        CBLSSignature aggSig;
+        std::vector<CBLSSignature> sigsToAggregate;
         std::vector<uint256> msgHashes;
         std::vector<CBLSPublicKey> pubKeys;
         std::set<MessageId> dups;
 
         msgHashes.reserve(messages.size());
         pubKeys.reserve(messages.size());
+        sigsToAggregate.reserve(messages.size());
 
-        for (const auto& p : byMessageHash) {
-            const auto& msgHash = p.first;
+        std::vector<CBLSPublicKey> pubKeysToAggregate;
+        for (const auto& [msgHash, vec_message_it] : byMessageHash) {
+            pubKeysToAggregate.clear();
+            pubKeysToAggregate.reserve(vec_message_it.size());
 
-            CBLSPublicKey aggPubKey;
-
-            for (const auto& msgIt : p.second) {
+            for (const auto& msgIt : vec_message_it) {
                 const auto& msg = msgIt->second;
 
                 if (!dups.emplace(msg.msgId).second) {
                     continue;
                 }
 
-                if (!aggSig.IsValid()) {
-                    aggSig = msg.sig;
-                } else {
-                    aggSig.AggregateInsecure(msg.sig);
-                }
-
-                if (!aggPubKey.IsValid()) {
-                    aggPubKey = msg.pubKey;
-                } else {
-                    aggPubKey.AggregateInsecure(msg.pubKey);
-                }
+                sigsToAggregate.push_back(msg.weightedSig);
+                pubKeysToAggregate.push_back(msg.weightedPubKey);
             }
+
+            CBLSPublicKey aggPubKey = CBLSPublicKey::AggregateInsecure(pubKeysToAggregate);
 
             if (!aggPubKey.IsValid()) {
                 // only duplicates for this msgHash
@@ -175,6 +200,7 @@ private:
             return true;
         }
 
+        CBLSSignature aggSig = CBLSSignature::AggregateInsecure(sigsToAggregate);
         return aggSig.VerifyInsecureAggregated(pubKeys, msgHashes);
     }
 
@@ -194,13 +220,14 @@ private:
 
     bool VerifyBatchSecureStep(std::map<uint256, std::vector<MessageMapIterator>>& byMessageHash)
     {
-        CBLSSignature aggSig;
+        std::vector<CBLSSignature> sigsToAggregate;
         std::vector<uint256> msgHashes;
         std::vector<CBLSPublicKey> pubKeys;
         std::set<MessageId> dups;
 
         msgHashes.reserve(messages.size());
         pubKeys.reserve(messages.size());
+        sigsToAggregate.reserve(messages.size());
 
         for (auto it = byMessageHash.begin(); it != byMessageHash.end(); ) {
             const auto& msgHash = it->first;
@@ -209,13 +236,8 @@ private:
 
             if (dups.emplace(msg.msgId).second) {
                 msgHashes.emplace_back(msgHash);
-                pubKeys.emplace_back(msg.pubKey);
-
-                if (!aggSig.IsValid()) {
-                    aggSig = msg.sig;
-                } else {
-                    aggSig.AggregateInsecure(msg.sig);
-                }
+                pubKeys.emplace_back(msg.weightedPubKey);
+                sigsToAggregate.push_back(msg.weightedSig);
             }
 
             messageIts.pop_back();
@@ -228,6 +250,7 @@ private:
 
         assert(!msgHashes.empty());
 
+        CBLSSignature aggSig = CBLSSignature::AggregateInsecure(sigsToAggregate);
         return aggSig.VerifyInsecureAggregated(pubKeys, msgHashes);
     }
 };

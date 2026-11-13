@@ -1,0 +1,819 @@
+// Copyright (c) 2009-2010 Satoshi Nakamoto
+// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#include <node/miner.h>
+
+#include <chain.h>
+#include <chainparams.h>
+#include <consensus/amount.h>
+#include <consensus/consensus.h>
+#include <consensus/merkle.h>
+#include <consensus/tx_verify.h>
+#include <consensus/validation.h>
+#include <deploymentstatus.h>
+#include <node/context.h>
+#include <policy/feerate.h>
+#include <policy/policy.h>
+#include <pow.h>
+#include <primitives/transaction.h>
+#include <timedata.h>
+#include <util/moneystr.h>
+#include <util/system.h>
+#include <validation.h>
+
+#include <chainlock/chainlock.h>
+#include <chainlock/handler.h>
+#include <evo/specialtx.h>
+#include <evo/cbtx.h>
+#include <evo/chainhelper.h>
+#include <evo/creditpool.h>
+#include <evo/mnhftx.h>
+#include <evo/providertx.h>
+#include <evo/deterministicmns.h>
+#include <evo/simplifiedmns.h>
+#include <evo/specialtxman.h>
+#include <governance/governance.h>
+#include <llmq/blockprocessor.h>
+#include <llmq/context.h>
+#include <llmq/options.h>
+#include <llmq/snapshot.h>
+#include <masternode/payments.h>
+
+#include <algorithm>
+#include <utility>
+
+namespace node {
+int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev)
+{
+    int64_t nOldTime = pblock->nTime;
+    int64_t nNewTime{std::max<int64_t>(pindexPrev->GetMedianTimePast() + 1, TicksSinceEpoch<std::chrono::seconds>(NodeClock::now()))};
+
+    if (nOldTime < nNewTime) {
+        pblock->nTime = nNewTime;
+    }
+
+    // Updating time can change work required on testnet:
+    if (consensusParams.fPowAllowMinDifficultyBlocks) {
+        pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, consensusParams);
+    }
+
+    return nNewTime - nOldTime;
+}
+
+static BlockAssembler::Options ClampOptions(BlockAssembler::Options options)
+{
+    options.nBlockMaxSize = std::clamp<size_t>(options.nBlockMaxSize, 1000, DEFAULT_BLOCK_MAX_SIZE);
+    return options;
+}
+
+BlockAssembler::BlockAssembler(Chainstate& chainstate, const NodeContext& node, const CTxMemPool* mempool, const Options& options) :
+      m_chain_helper(chainstate.ChainHelper()),
+      m_chainstate{chainstate},
+      m_evoDb(*Assert(node.evodb)),
+      m_chainlocks(*Assert(node.chainlocks)),
+      m_clhandler(*Assert(node.clhandler)),
+      chainparams(chainstate.m_chainman.GetParams()),
+      m_mempool{mempool},
+      m_quorum_block_processor(*Assert(Assert(node.llmq_ctx)->quorum_block_processor)),
+      m_options{ClampOptions(options)}
+{
+}
+
+void ApplyArgsManOptions(const ArgsManager& args, BlockAssembler::Options& options)
+{
+    // Block resource limits
+    options.nBlockMaxSize  = args.GetIntArg("-blockmaxsize", options.nBlockMaxSize);
+    if (const auto blockmintxfee{args.GetArg("-blockmintxfee")}) {
+        if (const auto parsed{ParseMoney(*blockmintxfee)}) options.blockMinFeeRate = CFeeRate{*parsed};
+    }
+}
+static BlockAssembler::Options ConfiguredOptions()
+{
+    BlockAssembler::Options options;
+    ApplyArgsManOptions(gArgs, options);
+    return options;
+}
+
+BlockAssembler::BlockAssembler(Chainstate& chainstate, const NodeContext& node, const CTxMemPool* mempool)
+    : BlockAssembler(chainstate, node, mempool, ConfiguredOptions()) {}
+
+void BlockAssembler::resetBlock()
+{
+    inBlock.clear();
+
+    // Reserve space for coinbase tx
+    nBlockSize = 1000;
+    nBlockSigOps = 100;
+
+    // These counters do not include coinbase tx
+    nBlockTx = 0;
+    nFees = 0;
+}
+
+// Helper to calculate best chainlock
+static bool CalcCbTxBestChainlock(const chainlock::Chainlocks& chainlocks, const CBlockIndex* pindexPrev,
+                                  uint32_t& bestCLHeightDiff, CBLSSignature& bestCLSignature)
+{
+    auto best_clsig = chainlocks.GetBestChainLock();
+    if (best_clsig.getHeight() < Params().GetConsensus().DeploymentHeight(Consensus::DEPLOYMENT_V19)) {
+        // We don't want legacy BLS ChainLocks in CbTx (can happen on regtest/devenets)
+        best_clsig = chainlock::ChainLockSig{};
+    }
+    if (best_clsig.getHeight() == pindexPrev->nHeight) {
+        // Our best CL is the newest one possible
+        bestCLHeightDiff = 0;
+        bestCLSignature = best_clsig.getSig();
+        return true;
+    }
+
+    auto prevBlockCoinbaseChainlock = GetNonNullCoinbaseChainlock(pindexPrev);
+    if (prevBlockCoinbaseChainlock.has_value()) {
+        // Previous block Coinbase contains a non-null CL: We must insert the same sig or a better (newest) one
+        if (best_clsig.IsNull()) {
+            // We don't know any CL, therefore inserting the CL of the previous block
+            bestCLHeightDiff = prevBlockCoinbaseChainlock->second + 1;
+            bestCLSignature = prevBlockCoinbaseChainlock->first;
+            return true;
+        }
+
+        // We check if our best CL is newer than the one from previous block Coinbase
+        int curCLHeight = best_clsig.getHeight();
+        int prevCLHeight = pindexPrev->nHeight - static_cast<int>(prevBlockCoinbaseChainlock->second) - 1;
+        if (curCLHeight < prevCLHeight) {
+            // Our best CL isn't newer: inserting CL from previous block
+            bestCLHeightDiff = prevBlockCoinbaseChainlock->second + 1;
+            bestCLSignature = prevBlockCoinbaseChainlock->first;
+        }
+        else {
+            // Our best CL is newer
+            bestCLHeightDiff = pindexPrev->nHeight - best_clsig.getHeight();
+            bestCLSignature = best_clsig.getSig();
+        }
+
+        return true;
+    }
+    else {
+        // Previous block Coinbase has no CL. We can either insert null or any valid CL
+        if (best_clsig.IsNull()) {
+            // We don't know any CL, therefore inserting a null CL
+            bestCLHeightDiff = 0;
+            bestCLSignature.Reset();
+            return false;
+        }
+
+        // Inserting our best CL
+        bestCLHeightDiff = pindexPrev->nHeight - best_clsig.getHeight();
+        bestCLSignature = best_clsig.getSig();
+
+        return true;
+    }
+}
+
+
+std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn)
+{
+    const auto time_start{SteadyClock::now()};
+
+    resetBlock();
+
+    pblocktemplate.reset(new CBlockTemplate());
+
+    if (!pblocktemplate.get()) {
+        return nullptr;
+    }
+    CBlock* const pblock = &pblocktemplate->block; // pointer for convenience
+
+    // Add dummy coinbase tx as first transaction
+    pblock->vtx.emplace_back();
+    pblocktemplate->vTxFees.push_back(-1); // updated at end
+    pblocktemplate->vTxSigOps.push_back(-1); // updated at end
+
+    LOCK(::cs_main);
+    CBlockIndex* pindexPrev = m_chainstate.m_chain.Tip();
+    assert(pindexPrev != nullptr);
+    nHeight = pindexPrev->nHeight + 1;
+
+    const bool fDIP0001Active_context{DeploymentActiveAfter(pindexPrev, chainparams.GetConsensus(), Consensus::DEPLOYMENT_DIP0001)};
+    const bool fDIP0003Active_context{DeploymentActiveAfter(pindexPrev, chainparams.GetConsensus(), Consensus::DEPLOYMENT_DIP0003)};
+    const bool fDIP0008Active_context{DeploymentActiveAfter(pindexPrev, chainparams.GetConsensus(), Consensus::DEPLOYMENT_DIP0008)};
+    const bool fV20Active_context{DeploymentActiveAfter(pindexPrev, chainparams.GetConsensus(), Consensus::DEPLOYMENT_V20)};
+    const bool fV24Active_context{DeploymentActiveAfter(pindexPrev, m_chainstate.m_chainman, Consensus::DEPLOYMENT_V24)};
+
+    // Limit size to between 1K and MaxBlockSize()-1K for sanity:
+    m_options.nBlockMaxSize = std::max<unsigned int>(1000, std::min<unsigned int>(MaxBlockSize(fDIP0001Active_context) - 1000, m_options.nBlockMaxSize));
+    m_options.nBlockMaxSigOps = MaxBlockSigOps(fDIP0001Active_context);
+
+    pblock->nVersion = m_chainstate.m_chainman.m_versionbitscache.ComputeBlockVersion(pindexPrev, chainparams.GetConsensus());
+    // Non-mainnet only: allow overriding block.nVersion with
+    // -blockversion=N to test forking scenarios
+    if (chainparams.NetworkIDString() != CBaseChainParams::MAIN) {
+        pblock->nVersion = gArgs.GetIntArg("-blockversion", pblock->nVersion);
+    }
+
+    pblock->nTime = TicksSinceEpoch<std::chrono::seconds>(NodeClock::now());
+    m_lock_time_cutoff = pindexPrev->GetMedianTimePast();
+
+    // The masternode list as built by the transactions selected so far. Provider transactions are
+    // applied to it as they are selected, so the ones that do not fit the list are left out.
+    std::optional<CMNListBuilder> mn_list_builder;
+    if (fDIP0003Active_context) {
+        // No list-transition logs: a package's trial may still be discarded, and block connection
+        // logs the transitions that actually happen.
+        mn_list_builder.emplace(*m_chain_helper.special_tx, pindexPrev, fV24Active_context, m_chainstate.CoinsTip(),
+                                /*debugLogs=*/false);
+        for (const Consensus::LLMQParams& params : llmq::GetEnabledQuorumParams(m_chainstate.m_chainman, pindexPrev)) {
+            std::vector<CTransactionRef> vqcTx;
+            if (m_quorum_block_processor.GetMineableCommitmentsTx(params,
+                                                                  nHeight,
+                                                                  vqcTx)) {
+                for (const auto& qcTx : vqcTx) {
+                    BlockValidationState state;
+                    if (!mn_list_builder->ApplyTx(*qcTx, state)) {
+                        throw std::runtime_error(
+                            strprintf("%s: quorum commitment does not apply to the masternode list: %s", __func__,
+                                      state.ToString()));
+                    }
+                    pblock->vtx.emplace_back(qcTx);
+                    pblocktemplate->vTxFees.emplace_back(0);
+                    pblocktemplate->vTxSigOps.emplace_back(0);
+                    nBlockSize += qcTx->GetTotalSize();
+                    ++nBlockTx;
+                }
+            }
+        }
+    }
+
+    int nPackagesSelected = 0;
+    int nDescendantsUpdated = 0;
+    if (m_mempool) {
+        LOCK(m_mempool->cs);
+        addPackageTxs(*m_mempool, nPackagesSelected, nDescendantsUpdated, pindexPrev,
+                      mn_list_builder ? &*mn_list_builder : nullptr);
+    }
+
+    const auto time_1{SteadyClock::now()};
+
+    m_last_block_num_txs = nBlockTx;
+    m_last_block_size = nBlockSize;
+    LogPrintf("CreateNewBlock(): total size %u txs: %u fees: %ld sigops %d\n", nBlockSize, nBlockTx, nFees, nBlockSigOps);
+
+    // Create coinbase transaction.
+    CMutableTransaction coinbaseTx;
+    coinbaseTx.vin.resize(1);
+    coinbaseTx.vin[0].prevout.SetNull();
+    coinbaseTx.vout.resize(1);
+    coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
+
+    // NOTE: unlike in bitcoin, we need to pass PREVIOUS block height here
+    CAmount blockSubsidy = GetBlockSubsidyInner(pindexPrev->nBits, pindexPrev->nHeight, chainparams.GetConsensus(), fV20Active_context);
+    CAmount blockReward = blockSubsidy + nFees;
+
+    // Compute regular coinbase transaction.
+    coinbaseTx.vout[0].nValue = blockReward;
+
+    if (!fDIP0003Active_context) {
+        coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
+    } else {
+        coinbaseTx.vin[0].scriptSig = CScript() << OP_RETURN;
+
+        coinbaseTx.nVersion = 3;
+        coinbaseTx.nType = TRANSACTION_COINBASE;
+
+        CCbTx cbTx;
+
+        if (fV24Active_context && fV20Active_context) {
+            cbTx.nVersion = CCbTx::Version::MERKLE_ROOT_ASSETUNLOCKS;
+        } else if (fV20Active_context) {
+            cbTx.nVersion = CCbTx::Version::CLSIG_AND_BALANCE;
+        } else if (fDIP0008Active_context) {
+            cbTx.nVersion = CCbTx::Version::MERKLE_ROOT_QUORUMS;
+        } else {
+            cbTx.nVersion = CCbTx::Version::MERKLE_ROOT_MNLIST;
+        }
+
+        cbTx.nHeight = nHeight;
+
+        BlockValidationState state;
+        CDeterministicMNList mn_list;
+        if (!mn_list_builder->Finish(*pblock, state, mn_list)) {
+            throw std::runtime_error(strprintf("%s: BuildNewListFromBlock failed: %s", __func__, state.ToString()));
+        }
+        if (!CalcCbTxMerkleRootMNList(cbTx.merkleRootMNList, mn_list.to_sml(), state)) {
+            throw std::runtime_error(strprintf("%s: CalcCbTxMerkleRootMNList failed: %s", __func__, state.ToString()));
+        }
+        if (fDIP0008Active_context) {
+            if (!CalcCbTxMerkleRootQuorums(*pblock, pindexPrev, m_quorum_block_processor, cbTx.merkleRootQuorums, state)) {
+                throw std::runtime_error(strprintf("%s: CalcCbTxMerkleRootQuorums failed: %s", __func__, state.ToString()));
+            }
+            if (fV20Active_context) {
+                if (CalcCbTxBestChainlock(m_chainlocks, pindexPrev, cbTx.bestCLHeightDiff, cbTx.bestCLSignature)) {
+                    LogPrintf("CreateNewBlock() h[%d] CbTx bestCLHeightDiff[%d] CLSig[%s]\n", nHeight, cbTx.bestCLHeightDiff, cbTx.bestCLSignature.ToString());
+                } else {
+                    // not an error
+                    LogPrintf("CreateNewBlock() h[%d] CbTx failed to find best CL. Inserting null CL\n", nHeight);
+                }
+                BlockValidationState state;
+                const auto creditPoolDiff = GetCreditPoolDiffForBlock(*m_chain_helper.credit_pool_manager, *pblock, pindexPrev, chainparams.GetConsensus(), blockSubsidy, state);
+                if (creditPoolDiff == std::nullopt) {
+                    throw std::runtime_error(strprintf("%s: GetCreditPoolDiffForBlock failed: %s", __func__, state.ToString()));
+                }
+
+                cbTx.creditPoolBalance = creditPoolDiff->GetTotalLocked();
+
+                if (cbTx.nVersion >= CCbTx::Version::MERKLE_ROOT_ASSETUNLOCKS) {
+                    cbTx.merkleRootAssetUnlocks = CalcCbTxMerkleRootAssetUnlocks(*pblock);
+                }
+            }
+        }
+
+        SetTxPayload(coinbaseTx, cbTx);
+    }
+
+    // Update coinbase transaction with additional info about masternode and governance payments,
+    // get some info back to pass to getblocktemplate
+    const MnRewardEra mn_reward_era{GetMnRewardEraAfter(pindexPrev, m_chainstate.m_chainman)};
+    m_chain_helper.mn_payments->FillBlockPayments(coinbaseTx, pindexPrev, blockSubsidy, nFees, mn_reward_era, pblocktemplate->voutMasternodePayments, pblocktemplate->voutSuperblockPayments);
+
+    pblock->vtx[0] = MakeTransactionRef(std::move(coinbaseTx));
+    pblocktemplate->vTxFees[0] = -nFees;
+
+    // Fill in header
+    pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
+    UpdateTime(pblock, chainparams.GetConsensus(), pindexPrev);
+    pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock, chainparams.GetConsensus());
+    pblock->nNonce         = 0;
+    pblocktemplate->nPrevBits = pindexPrev->nBits;
+    pblocktemplate->vTxSigOps[0] = GetLegacySigOpCount(*pblock->vtx[0]);
+
+    BlockValidationState state;
+    if (m_options.test_block_validity && !TestBlockValidity(state, m_chainlocks, m_evoDb, chainparams, m_chainstate, *pblock, pindexPrev, /*fCheckPOW=*/false, /*fCheckMerkleRoot=*/false)) {
+        throw std::runtime_error(strprintf("%s: TestBlockValidity failed: %s", __func__, state.ToString()));
+    }
+    const auto time_2{SteadyClock::now()};
+
+    LogPrint(BCLog::BENCHMARK, "CreateNewBlock() packages: %.2fms (%d packages, %d updated descendants), validity: %.2fms (total %.2fms)\n",
+             Ticks<MillisecondsDouble>(time_1 - time_start), nPackagesSelected, nDescendantsUpdated,
+             Ticks<MillisecondsDouble>(time_2 - time_1),
+             Ticks<MillisecondsDouble>(time_2 - time_start));
+
+    return std::move(pblocktemplate);
+}
+
+void BlockAssembler::onlyUnconfirmed(CTxMemPool::setEntries& testSet)
+{
+    for (CTxMemPool::setEntries::iterator iit = testSet.begin(); iit != testSet.end(); ) {
+        // Only test txs not already in the block
+        if (inBlock.count(*iit)) {
+            testSet.erase(iit++);
+        } else {
+            iit++;
+        }
+    }
+}
+
+bool BlockAssembler::TestPackage(uint64_t packageSize, unsigned int packageSigOps) const
+{
+    if (nBlockSize + packageSize >= m_options.nBlockMaxSize) {
+        return false;
+    }
+
+    if (nBlockSigOps + packageSigOps >= m_options.nBlockMaxSigOps) {
+        return false;
+    }
+    return true;
+}
+
+// Perform transaction-level checks before adding to block:
+// - transaction finality (locktime)
+// - safe TXs in regard to ChainLocks
+bool BlockAssembler::TestPackageTransactions(const CTxMemPool::setEntries& package) const
+{
+    const SpecialTxRules special_tx_rules{GetSpecialTxRules(m_chainstate.m_chain.Tip(), m_chainstate.m_chainman)};
+    for (CTxMemPool::txiter it : package) {
+        if (!IsFinalTx(it->GetTx(), nHeight, m_lock_time_cutoff)) {
+            return false;
+        }
+
+        // A special transaction that was valid when it entered the mempool can be invalidated by
+        // intervening state, most sharply by a fork activating a rule it violates, and nothing
+        // evicts it. Selection otherwise trusts mempool validity, so the entry would be picked into
+        // every template and TestBlockValidity would then reject the whole block, leaving an honest
+        // miner unable to produce one at all. Recheck here, at package granularity: the caller adds
+        // every member of a package that passes, so dropping one member while keeping its
+        // descendants would itself yield an invalid template. check_sigs is off because signatures
+        // were verified on entry and cannot have changed; note CheckMNHFTx() verifies its quorum
+        // signature regardless, which is cheap enough here given how rare MNHF signals are.
+        if (it->GetTx().IsSpecialTxVersion()) {
+            TxValidationState tx_state;
+            if (!m_chain_helper.special_tx->CheckSpecialTx(it->GetTx(), m_chainstate.m_chain.Tip(), special_tx_rules,
+                                                           m_chainstate.CoinsTip(), /*check_sigs=*/false, tx_state)) {
+                return false;
+            }
+        }
+
+        // The shared-collateral covenant applies to every transaction, not only special ones: a
+        // normal transaction creating or spending a template output can sit in the mempool across
+        // v24 activation on a node accepting nonstandard transactions, and would poison every
+        // template through the same TestBlockValidity path described above.
+        if (special_tx_rules.v24) {
+            TxValidationState tx_state;
+            if (!CheckSharedCollateralSpends(it->GetTx(), m_chainstate.CoinsTip(), tx_state) ||
+                !CheckSharedCollateralTemplateOutputs(it->GetTx(), tx_state)) {
+                return false;
+            }
+        }
+
+        const auto& txid = it->GetTx().GetHash();
+        if (!m_chain_helper.IsInstantSendEnabled() || m_chain_helper.IsInstantSendLocked(txid)) {
+            continue;
+        }
+
+        if (!it->GetTx().vin.empty() && !m_clhandler.IsTxSafeForMining(txid)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void BlockAssembler::AddToBlock(CTxMemPool::txiter iter)
+{
+    pblocktemplate->block.vtx.emplace_back(iter->GetSharedTx());
+    pblocktemplate->vTxFees.push_back(iter->GetFee());
+    pblocktemplate->vTxSigOps.push_back(iter->GetSigOpCount());
+    nBlockSize += iter->GetTxSize();
+    ++nBlockTx;
+    nBlockSigOps += iter->GetSigOpCount();
+    nFees += iter->GetFee();
+    inBlock.insert(iter);
+
+    bool fPrintPriority = gArgs.GetBoolArg("-printpriority", DEFAULT_PRINTPRIORITY);
+    if (fPrintPriority) {
+        LogPrintf("fee rate %s txid %s\n",
+                  CFeeRate(iter->GetModifiedFee(), iter->GetTxSize()).ToString(),
+                  iter->GetTx().GetHash().ToString());
+    }
+}
+
+/** Add descendants of given transactions to mapModifiedTx with ancestor
+ * state updated assuming given transactions are inBlock. Returns number
+ * of updated descendants. */
+static int UpdatePackagesForAdded(const CTxMemPool& mempool,
+                                  const CTxMemPool::setEntries& alreadyAdded,
+                                  indexed_modified_transaction_set& mapModifiedTx) EXCLUSIVE_LOCKS_REQUIRED(mempool.cs)
+{
+    AssertLockHeld(mempool.cs);
+
+    int nDescendantsUpdated = 0;
+    for (CTxMemPool::txiter it : alreadyAdded) {
+        CTxMemPool::setEntries descendants;
+        mempool.CalculateDescendants(it, descendants);
+        // Insert all descendants (not yet in block) into the modified set
+        for (CTxMemPool::txiter desc : descendants) {
+            if (alreadyAdded.count(desc)) {
+                continue;
+            }
+            ++nDescendantsUpdated;
+            modtxiter mit = mapModifiedTx.find(desc);
+            if (mit == mapModifiedTx.end()) {
+                CTxMemPoolModifiedEntry modEntry(desc);
+                mit = mapModifiedTx.insert(modEntry).first;
+            }
+            mapModifiedTx.modify(mit, update_for_parent_inclusion(it));
+        }
+    }
+    return nDescendantsUpdated;
+}
+
+void BlockAssembler::SortForBlock(const CTxMemPool::setEntries& package, std::vector<CTxMemPool::txiter>& sortedEntries)
+{
+    // Sort package by ancestor count
+    // If a transaction A depends on transaction B, then A's ancestor count
+    // must be greater than B's.  So this is sufficient to validly order the
+    // transactions for block inclusion.
+    sortedEntries.clear();
+    sortedEntries.insert(sortedEntries.begin(), package.begin(), package.end());
+    std::sort(sortedEntries.begin(), sortedEntries.end(), CompareTxIterByAncestorCount());
+}
+
+// This transaction selection algorithm orders the mempool based
+// on feerate of a transaction including all unconfirmed ancestors.
+// Since we don't remove transactions from the mempool as we select them
+// for block inclusion, we need an alternate method of updating the feerate
+// of a transaction with its not-yet-selected ancestors as we go.
+// This is accomplished by walking the in-mempool descendants of selected
+// transactions and storing a temporary modified state in mapModifiedTxs.
+// Each time through the loop, we compare the best transaction in
+// mapModifiedTxs with the next transaction in the mempool to decide what
+// transaction package to work on next.
+void BlockAssembler::addPackageTxs(const CTxMemPool& mempool, int& nPackagesSelected, int& nDescendantsUpdated,
+                                   const CBlockIndex* const pindexPrev, CMNListBuilder* mn_list_builder)
+{
+    AssertLockHeld(mempool.cs);
+
+    // This credit pool is used only to check withdrawal limits and to find
+    // duplicates of indexes. There's used `BlockSubsidy` equaled to 0
+    std::optional<CCreditPoolDiff> creditPoolDiff;
+    if (DeploymentActiveAfter(pindexPrev, chainparams.GetConsensus(), Consensus::DEPLOYMENT_V20)) {
+        CCreditPool creditPool = m_chain_helper.GetCreditPool(pindexPrev);
+        creditPoolDiff.emplace(std::move(creditPool), pindexPrev, chainparams.GetConsensus(), 0);
+    }
+
+    // This map with signals is used only to find duplicates
+    auto signals = m_chain_helper.ehf_manager->GetSignalsStage(pindexPrev);
+    const SpecialTxRules special_tx_rules{GetSpecialTxRules(pindexPrev, m_chainstate.m_chainman)};
+    // Masternodes whose operator key a transaction already in the block changes or revokes. A
+    // ProUpServTx of theirs must not follow: one left out of the key change's package, whether it
+    // could not be put first, did not fit or did not pass TestPackageTransactions() then (which can
+    // change while the template is built), may come up later.
+    std::set<uint256> keyChangedMNs;
+    const auto serviceUpdateTarget = [](const CTransaction& tx) -> std::optional<uint256> {
+        if (tx.nType != TRANSACTION_PROVIDER_UPDATE_SERVICE) return std::nullopt;
+        const auto opt_proTx = GetTxPayload<CProUpServTx>(tx);
+        return opt_proTx ? std::make_optional(opt_proTx->proTxHash) : std::nullopt;
+    };
+
+    // mapModifiedTx will store sorted packages after they are modified
+    // because some of their txs are already in the block
+    indexed_modified_transaction_set mapModifiedTx;
+    // Keep track of entries that failed inclusion, to avoid duplicate work
+    CTxMemPool::setEntries failedTx;
+
+    CTxMemPool::indexed_transaction_set::index<ancestor_score>::type::iterator mi = mempool.mapTx.get<ancestor_score>().begin();
+    CTxMemPool::txiter iter;
+
+    // Limit the number of attempts to add transactions to the block when it is
+    // close to full; this is just a simple heuristic to finish quickly if the
+    // mempool has a lot of entries.
+    const int64_t MAX_CONSECUTIVE_FAILURES = 1000;
+    int64_t nConsecutiveFailed = 0;
+
+    while (mi != mempool.mapTx.get<ancestor_score>().end() || !mapModifiedTx.empty()) {
+        // First try to find a new transaction in mapTx to evaluate.
+        //
+        // Skip entries in mapTx that are already in a block or are present
+        // in mapModifiedTx (which implies that the mapTx ancestor state is
+        // stale due to ancestor inclusion in the block)
+        // Also skip transactions that we've already failed to add. This can happen if
+        // we consider a transaction in mapModifiedTx and it fails: we can then
+        // potentially consider it again while walking mapTx.  It's currently
+        // guaranteed to fail again, but as a belt-and-suspenders check we put it in
+        // failedTx and avoid re-evaluation, since the re-evaluation would be using
+        // cached size/sigops/fee values that are not actually correct.
+        /** Return true if given transaction from mapTx has already been evaluated,
+         * or if the transaction's cached data in mapTx is incorrect. */
+        if (mi != mempool.mapTx.get<ancestor_score>().end()) {
+            auto it = mempool.mapTx.project<0>(mi);
+            assert(it != mempool.mapTx.end());
+            if (mapModifiedTx.count(it) || inBlock.count(it) || failedTx.count(it)) {
+                ++mi;
+                continue;
+            }
+        }
+
+        // Now that mi is not stale, determine which transaction to evaluate:
+        // the next entry from mapTx, or the best from mapModifiedTx?
+        bool fUsingModified = false;
+
+        modtxscoreiter modit = mapModifiedTx.get<ancestor_score>().begin();
+        if (mi == mempool.mapTx.get<ancestor_score>().end()) {
+            // We're out of entries in mapTx; use the entry from mapModifiedTx
+            iter = modit->iter;
+            fUsingModified = true;
+        } else {
+            // Try to compare the mapTx entry to the mapModifiedTx entry
+            iter = mempool.mapTx.project<0>(mi);
+            if (modit != mapModifiedTx.get<ancestor_score>().end() &&
+                    CompareTxMemPoolEntryByAncestorFee()(*modit, CTxMemPoolModifiedEntry(iter))) {
+                // The best entry in mapModifiedTx has higher score
+                // than the one from mapTx.
+                // Switch which transaction (package) to consider
+                iter = modit->iter;
+                fUsingModified = true;
+            } else {
+                // Either no entry in mapModifiedTx, or it's worse than mapTx.
+                // Increment mi for the next loop iteration.
+                ++mi;
+            }
+        }
+
+        // We skip mapTx entries that are inBlock, and mapModifiedTx shouldn't
+        // contain anything that is inBlock.
+        assert(!inBlock.count(iter));
+
+        uint64_t packageSize = iter->GetSizeWithAncestors();
+        CAmount packageFees = iter->GetModFeesWithAncestors();
+        unsigned int packageSigOps = iter->GetSigOpCountWithAncestors();
+        if (fUsingModified) {
+            packageSize = modit->nSizeWithAncestors;
+            packageFees = modit->nModFeesWithAncestors;
+            packageSigOps = modit->nSigOpCountWithAncestors;
+        }
+
+        if (packageFees < m_options.blockMinFeeRate.GetFee(packageSize)) {
+            // Everything else we might consider has a lower fee rate
+            return;
+        }
+
+        if (!TestPackage(packageSize, packageSigOps)) {
+            if (fUsingModified) {
+                // Since we always look at the best entry in mapModifiedTx,
+                // we must erase failed entries so that we can consider the
+                // next best entry on the next loop iteration
+                mapModifiedTx.get<ancestor_score>().erase(modit);
+                failedTx.insert(iter);
+            }
+
+            ++nConsecutiveFailed;
+
+            if (nConsecutiveFailed > MAX_CONSECUTIVE_FAILURES && nBlockSize > m_options.nBlockMaxSize - 1000) {
+                // Give up if we're close to full and haven't succeeded in a while
+                break;
+            }
+            continue;
+        }
+
+        auto ancestors{mempool.AssumeCalculateMemPoolAncestors(__func__, *iter, CTxMemPool::Limits::NoLimits(), /*fSearchForParents=*/false)};
+
+        onlyUnconfirmed(ancestors);
+        ancestors.insert(iter);
+
+        // A pending ProUpServTx signed with the operator key that a key change in this package
+        // replaces must not follow the key change in the block: it would restore the previous
+        // operator's service fields. Mine such updates first. One that cannot be in this block now,
+        // whose package block assembly could not reliably put first (the mempool rejects those on
+        // entry, but a reorg can return such ancestors later), or whose package has an update of a
+        // masternode whose key already changed in the block, is left out: keyChangedMNs keeps it out
+        // of the rest of the block. If those pulled in do not fit, they are all left out instead of
+        // holding the key change back, which pending updates could otherwise do forever.
+        CTxMemPool::setEntries serviceUpdates;
+        for (const auto& entry : ancestors) {
+            for (const auto& update : mempool.GetServiceUpdatesBeforeKeyChange(entry)) {
+                if (inBlock.count(update) || serviceUpdates.count(update)) {
+                    continue;
+                }
+                auto updatePackage{mempool.AssumeCalculateMemPoolAncestors(__func__, *update,
+                                                                           CTxMemPool::Limits::NoLimits(),
+                                                                           /*fSearchForParents=*/false)};
+                onlyUnconfirmed(updatePackage);
+                updatePackage.insert(update);
+                const bool followsKeyChange{std::any_of(updatePackage.begin(), updatePackage.end(),
+                                                        [&](const CTxMemPool::txiter& it) {
+                                                            const auto target{serviceUpdateTarget(it->GetTx())};
+                                                            return target && keyChangedMNs.count(*target);
+                                                        })};
+                if (!followsKeyChange && TestPackageTransactions(updatePackage) &&
+                    !mempool.IsUnorderableServiceUpdate(update->GetTx(), updatePackage)) {
+                    serviceUpdates.insert(updatePackage.begin(), updatePackage.end());
+                }
+            }
+        }
+        if (!serviceUpdates.empty()) {
+            uint64_t extraSize{0};
+            unsigned int extraSigOps{0};
+            for (const auto& entry : serviceUpdates) {
+                if (!ancestors.count(entry)) {
+                    extraSize += entry->GetTxSize();
+                    extraSigOps += entry->GetSigOpCount();
+                }
+            }
+            if (!TestPackage(packageSize + extraSize, packageSigOps + extraSigOps)) {
+                serviceUpdates.clear();
+            }
+        }
+
+        // Test if all tx's are Final and safe
+        if (!TestPackageTransactions(ancestors)) {
+            if (fUsingModified) {
+                mapModifiedTx.get<ancestor_score>().erase(modit);
+                failedTx.insert(iter);
+            }
+            continue;
+        }
+
+        // Package can be added. Sort the entries in a valid order, the service updates first.
+        std::vector<CTxMemPool::txiter> sortedEntries;
+        SortForBlock(serviceUpdates, sortedEntries);
+        CTxMemPool::setEntries rest;
+        for (const auto& entry : ancestors) {
+            if (!serviceUpdates.count(entry)) {
+                rest.insert(entry);
+            }
+        }
+        std::vector<CTxMemPool::txiter> sortedRest;
+        SortForBlock(rest, sortedRest);
+        sortedEntries.insert(sortedEntries.end(), sortedRest.begin(), sortedRest.end());
+        ancestors.insert(serviceUpdates.begin(), serviceUpdates.end());
+
+        auto packageSignals = signals;
+        std::vector<uint256> packageKeyChangedMNs;
+        std::vector<CTransactionRef> creditPoolTransactions;
+        bool validPackage{true};
+        for (const auto& entry : sortedEntries) {
+            const auto& tx = entry->GetTx();
+            if (const auto target = serviceUpdateTarget(tx);
+                target && (keyChangedMNs.count(*target) ||
+                           std::find(packageKeyChangedMNs.begin(), packageKeyChangedMNs.end(), *target) !=
+                               packageKeyChangedMNs.end())) {
+                LogPrintf("%s: package tx %s skipped, it would follow a key change of masternode %s\n", __func__,
+                          tx.GetHash().ToString(), target->ToString());
+                validPackage = false;
+                break;
+            }
+            if (const auto target = mempool.GetKeyChangeTarget(*entry)) {
+                packageKeyChangedMNs.push_back(*target);
+            }
+            if (std::optional<uint8_t> signal = extractEHFSignal(tx); signal != std::nullopt) {
+                if (!packageSignals.emplace(*signal, 0).second) {
+                    LogPrintf("%s: package tx %s skipped due to duplicate EHF signal %d\n", __func__,
+                              tx.GetHash().ToString(), *signal);
+                    validPackage = false;
+                    break;
+                }
+            }
+            if (tx.IsSpecialTxVersion() && (tx.nType == TRANSACTION_ASSET_LOCK || tx.nType == TRANSACTION_ASSET_UNLOCK)) {
+                // Version 2 asset unlocks are not expiry-evicted: an expired instance stays in
+                // the mempool awaiting a re-signed replacement. Skip instances that are not
+                // currently minable (expired height window or stale quorum) instead of
+                // producing an invalid template.
+                if (IsAssetUnlockWithStableTxid(tx)) {
+                    TxValidationState state;
+                    if (!m_chain_helper.special_tx->CheckSpecialTx(tx, m_chainstate.m_chain.Tip(), special_tx_rules,
+                                                                   m_chainstate.CoinsTip(), /*check_sigs=*/true, state)) {
+                        LogPrintf("%s: package tx %s skipped, asset unlock instance not currently minable: %s\n", __func__,
+                                  tx.GetHash().ToString(), state.ToString());
+                        validPackage = false;
+                        break;
+                    }
+                }
+                creditPoolTransactions.emplace_back(entry->GetSharedTx());
+            }
+        }
+
+        // Provider transactions are checked against the tip on entry, so two of them can each be
+        // valid alone and still conflict in one block. Apply the package to a copy of the list as
+        // built so far and skip it if any of its transactions does not apply, instead of producing a
+        // template whose masternode list cannot be built.
+        std::optional<CMNListBuilder> package_mn_list;
+        if (validPackage && mn_list_builder != nullptr &&
+            std::any_of(sortedEntries.begin(), sortedEntries.end(),
+                        [](const auto& entry) { return entry->GetTx().IsSpecialTxVersion(); })) {
+            package_mn_list.emplace(*mn_list_builder);
+            for (const auto& entry : sortedEntries) {
+                const auto& tx = entry->GetTx();
+                BlockValidationState state;
+                std::string error;
+                try {
+                    if (!package_mn_list->ApplyTx(tx, state)) error = state.ToString();
+                } catch (const std::runtime_error& e) {
+                    // AddMN()/UpdateMN() report a unique-property conflict by throwing
+                    error = e.what();
+                }
+                if (!error.empty()) {
+                    LogPrintf("%s: package tx %s skipped, does not apply to the masternode list: %s\n", __func__,
+                              tx.GetHash().ToString(), error);
+                    validPackage = false;
+                    break;
+                }
+            }
+        }
+
+        if (validPackage && creditPoolDiff != std::nullopt && !creditPoolTransactions.empty()) {
+            TxValidationState state;
+            if (!creditPoolDiff->ProcessLockUnlockTransactions(creditPoolTransactions, state)) {
+                LogPrintf("%s: package tx %s skipped due to credit pool state: %s\n", __func__,
+                          iter->GetTx().GetHash().ToString(), state.ToString());
+                validPackage = false;
+            }
+        }
+        if (!validPackage) {
+            if (fUsingModified) {
+                mapModifiedTx.get<ancestor_score>().erase(modit);
+                failedTx.insert(iter);
+            }
+            continue;
+        }
+
+        // This transaction will make it in; reset the failed counter.
+        nConsecutiveFailed = 0;
+        signals = std::move(packageSignals);
+        keyChangedMNs.insert(packageKeyChangedMNs.begin(), packageKeyChangedMNs.end());
+        if (package_mn_list) {
+            *mn_list_builder = std::move(*package_mn_list);
+        }
+
+        for (size_t i = 0; i < sortedEntries.size(); ++i) {
+            AddToBlock(sortedEntries[i]);
+            // Erase from the modified set, if present
+            mapModifiedTx.erase(sortedEntries[i]);
+        }
+
+        ++nPackagesSelected;
+
+        // Update transactions that depend on each of these
+        nDescendantsUpdated += UpdatePackagesForAdded(mempool, ancestors, mapModifiedTx);
+    }
+}
+} // namespace node

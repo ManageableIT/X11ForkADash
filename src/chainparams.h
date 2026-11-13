@@ -1,36 +1,70 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2015 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_CHAINPARAMS_H
 #define BITCOIN_CHAINPARAMS_H
 
-#include "chainparamsbase.h"
-#include "consensus/params.h"
-#include "primitives/block.h"
-#include "protocol.h"
+#include <chainparamsbase.h>
+#include <consensus/params.h>
+#include <llmq/params.h>
+#include <netaddress.h>
+#include <primitives/block.h>
+#include <protocol.h>
+#include <util/hash_type.h>
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
-
-struct CDNSSeedData {
-    std::string host;
-    bool supportsServiceBitsFiltering;
-    CDNSSeedData(const std::string &strHost, bool supportsServiceBitsFilteringIn) : host(strHost), supportsServiceBitsFiltering(supportsServiceBitsFilteringIn) {}
-};
-
-struct SeedSpec6 {
-    uint8_t addr[16];
-    uint16_t port;
-};
 
 typedef std::map<int, uint256> MapCheckpoints;
 
 struct CCheckpointData {
     MapCheckpoints mapCheckpoints;
+
+    int GetHeight() const {
+        const auto& final_checkpoint = mapCheckpoints.rbegin();
+        return final_checkpoint->first /* height */;
+    }
 };
 
+struct AssumeutxoHash : public BaseHash<uint256> {
+    explicit AssumeutxoHash(const uint256& hash) : BaseHash(hash) {}
+};
+
+struct EvoSnapshotHash : public BaseHash<uint256> {
+    explicit EvoSnapshotHash(const uint256& hash) : BaseHash(hash) {}
+};
+
+/**
+ * Holds configuration for use during UTXO snapshot load and validation. The contents
+ * here are security critical, since they dictate which UTXO snapshots are recognized
+ * as valid.
+ */
+struct AssumeutxoData {
+    //! The expected hash of the deserialized UTXO set.
+    const AssumeutxoHash hash_serialized;
+
+    //! The expected single-SHA256 hash of the canonical Dash evo section.
+    const EvoSnapshotHash evo_hash;
+
+    //! Used to populate the nChainTx value, which is used during BlockManager::LoadBlockIndex().
+    //!
+    //! We need to hardcode the value here because this is computed cumulatively using block data,
+    //! which we do not necessarily have at the time of snapshot load.
+    const unsigned int nChainTx;
+};
+
+using MapAssumeutxo = std::map<int, const AssumeutxoData>;
+
+/**
+ * Holds various statistics on transactions within a chain. Used to estimate
+ * verification progress during chain sync.
+ *
+ * See also: CChainParams::TxData, GuessVerificationProgress.
+ */
 struct ChainTxData {
     int64_t nTime;
     int64_t nTxCount;
@@ -39,10 +73,7 @@ struct ChainTxData {
 
 /**
  * CChainParams defines various tweakable parameters of a given instance of the
- * Dash system. There are three: the main network on which people trade goods
- * and services, the public test network which gets reset from time to time and
- * a regression test mode which is intended for private networks only. It has
- * minimal difficulty to ensure that blocks can be found instantly.
+ * Dash system.
  */
 class CChainParams
 {
@@ -59,70 +90,118 @@ public:
 
     const Consensus::Params& GetConsensus() const { return consensus; }
     const CMessageHeader::MessageStartChars& MessageStart() const { return pchMessageStart; }
-    int GetDefaultPort() const { return nDefaultPort; }
+    uint16_t GetDefaultPort() const { return nDefaultPort; }
+    uint16_t GetDefaultPort(Network net) const
+    {
+        return net == NET_I2P ? I2P_SAM31_PORT : GetDefaultPort();
+    }
+    uint16_t GetDefaultPort(const std::string& addr) const
+    {
+        CNetAddr a;
+        return a.SetSpecial(addr) ? GetDefaultPort(a.GetNetwork()) : GetDefaultPort();
+    }
+    uint16_t GetDefaultPlatformP2PPort() const { return nDefaultPlatformP2PPort; }
+    uint16_t GetDefaultPlatformHTTPPort() const { return nDefaultPlatformHTTPPort; }
 
     const CBlock& GenesisBlock() const { return genesis; }
     const CBlock& DevNetGenesisBlock() const { return devnetGenesis; }
     /** Default value for -checkmempool and -checkblockindex argument */
     bool DefaultConsistencyChecks() const { return fDefaultConsistencyChecks; }
-    /** Policy: Filter transactions that do not match well-defined patterns */
-    bool RequireStandard() const { return fRequireStandard; }
     /** Require addresses specified with "-externalip" parameter to be routable */
     bool RequireRoutableExternalIP() const { return fRequireRoutableExternalIP; }
+    /** If this chain allows time to be mocked */
+    bool IsMockableChain() const { return m_is_mockable_chain; }
+    /** If this chain is exclusively used for testing */
+    bool IsTestChain() const { return m_is_test_chain; }
     uint64_t PruneAfterHeight() const { return nPruneAfterHeight; }
-    /** Make miner stop after a block is found. In RPC, don't return until nGenProcLimit blocks are generated */
-    bool MineBlocksOnDemand() const { return fMineBlocksOnDemand; }
+    /** Block files containing a block-height within MinBlocksToKeep() of ActiveChain().Tip() will not be pruned. */
+    int MinBlocksToKeep() const { return m_min_blocks_to_keep; }
+    /** Minimum free space (in GB) needed for data directory */
+    uint64_t AssumedBlockchainSize() const { return m_assumed_blockchain_size; }
+    /** Minimum free space (in GB) needed for data directory when pruned; Does not include prune target*/
+    uint64_t AssumedChainStateSize() const { return m_assumed_chain_state_size; }
+    /** Whether it is possible to mine blocks on demand (no retargeting) */
+    bool MineBlocksOnDemand() const { return consensus.fPowNoRetargeting; }
     /** Allow multiple addresses to be selected from the same network group (e.g. 192.168.x.x) */
     bool AllowMultipleAddressesFromGroup() const { return fAllowMultipleAddressesFromGroup; }
-    /** Allow nodes with the same address and multiple ports */
-    bool AllowMultiplePorts() const { return fAllowMultiplePorts; }
-    /** Return the BIP70 network string (main, test or regtest) */
+    /** How long to wait until we allow retrying of a LLMQ connection  */
+    int LLMQConnectionRetryTimeout() const { return nLLMQConnectionRetryTimeout; }
+    /** Return the network string */
     std::string NetworkIDString() const { return strNetworkID; }
-    const std::vector<CDNSSeedData>& DNSSeeds() const { return vSeeds; }
+    /** Return the list of hostnames to look up for DNS seeds */
+    const std::vector<std::string>& DNSSeeds() const { return vSeeds; }
     const std::vector<unsigned char>& Base58Prefix(Base58Type type) const { return base58Prefixes[type]; }
+    /** DIP-18 Platform address bech32m HRP: "dash" on mainnet, "tdash" on test chains */
+    const std::string& Bech32PlatformHRP() const { return bech32_platform_hrp; }
     int ExtCoinType() const { return nExtCoinType; }
-    const std::vector<SeedSpec6>& FixedSeeds() const { return vFixedSeeds; }
+    const std::vector<uint8_t>& FixedSeeds() const { return vFixedSeeds; }
     const CCheckpointData& Checkpoints() const { return checkpointData; }
+
+    //! Get allowed assumeutxo configuration.
+    //! @see ChainstateManager
+    const MapAssumeutxo& Assumeutxo() const { return m_assumeutxo_data; }
+
     const ChainTxData& TxData() const { return chainTxData; }
-    void UpdateVersionBitsParameters(Consensus::DeploymentPos d, int64_t nStartTime, int64_t nTimeout, int64_t nWindowSize, int64_t nThreshold);
     void UpdateDIP3Parameters(int nActivationHeight, int nEnforcementHeight);
+    void UpdateDIP8Parameters(int nActivationHeight);
     void UpdateBudgetParameters(int nMasternodePaymentsStartBlock, int nBudgetPaymentsStartBlock, int nSuperblockStartBlock);
-    void UpdateSubsidyAndDiffParams(int nMinimumDifficultyBlocks, int nHighSubsidyBlocks, int nHighSubsidyFactor);
-    void UpdateLLMQChainLocks(Consensus::LLMQType llmqType);
+    void UpdateLLMQInstantSend(Consensus::LLMQType llmqType);
+    /**
+     * Validate params for Masternodes EHF
+     *
+     * @param[in] nBit The version bit to update
+     * @param[in] timePast The block time to validate if release is already time-outed
+     * @return Whether params are legit and params are updated (if release is known)
+     */
+    bool IsValidMNActivation(int nBit, int64_t timePast) const;
     int PoolMinParticipants() const { return nPoolMinParticipants; }
     int PoolMaxParticipants() const { return nPoolMaxParticipants; }
     int FulfilledRequestExpireTime() const { return nFulfilledRequestExpireTime; }
-    const std::vector<std::string>& SporkAddresses() const { return vSporkAddresses; }
-    int MinSporkKeys() const { return nMinSporkKeys; }
-    bool BIP9CheckMasternodesUpgraded() const { return fBIP9CheckMasternodesUpgraded; }
+    const std::string& SporkAddress() const { return strSporkAddress; }
+    int CreditPoolPeriodBlocks() const { return nCreditPoolPeriodBlocks; }
+    [[nodiscard]] std::optional<Consensus::LLMQParams> GetLLMQ(Consensus::LLMQType llmqType) const;
+
 protected:
     CChainParams() {}
 
     Consensus::Params consensus;
     CMessageHeader::MessageStartChars pchMessageStart;
-    int nDefaultPort;
+    uint16_t nDefaultPort;
     uint64_t nPruneAfterHeight;
-    std::vector<CDNSSeedData> vSeeds;
+    /// Four days of blocks (2304) on every network but regtest. Validation reads older blocks from disk:
+    /// a credit pool is rebuilt from its newest daily snapshot, reading the block one withdrawal window
+    /// before each block since it, and rotated LLMQ modifiers read the work block of earlier cycles.
+    /// Regtest keeps Bitcoin Core's 288 for the upstream pruning tests.
+    int m_min_blocks_to_keep{288};
+    uint64_t m_assumed_blockchain_size;
+    uint64_t m_assumed_chain_state_size;
+    std::vector<std::string> vSeeds;
     std::vector<unsigned char> base58Prefixes[MAX_BASE58_TYPES];
+    std::string bech32_platform_hrp;
     int nExtCoinType;
     std::string strNetworkID;
     CBlock genesis;
     CBlock devnetGenesis;
-    std::vector<SeedSpec6> vFixedSeeds;
+    std::vector<uint8_t> vFixedSeeds;
     bool fDefaultConsistencyChecks;
-    bool fRequireStandard;
     bool fRequireRoutableExternalIP;
-    bool fMineBlocksOnDemand;
+    bool m_is_test_chain;
     bool fAllowMultipleAddressesFromGroup;
-    bool fAllowMultiplePorts;
+    bool m_is_mockable_chain;
+    int nLLMQConnectionRetryTimeout;
     CCheckpointData checkpointData;
+    MapAssumeutxo m_assumeutxo_data;
     ChainTxData chainTxData;
     int nPoolMinParticipants;
     int nPoolMaxParticipants;
     int nFulfilledRequestExpireTime;
-    std::vector<std::string> vSporkAddresses;
-    int nMinSporkKeys;
-    bool fBIP9CheckMasternodesUpgraded;
+    std::string strSporkAddress;
+    uint16_t nDefaultPlatformP2PPort;
+    uint16_t nDefaultPlatformHTTPPort;
+    /// The number of blocks the credit pool tracks; 576 (one day) on mainnet, reduced on regtest
+    int nCreditPoolPeriodBlocks;
+
+    void AddLLMQ(Consensus::LLMQType llmqType);
 };
 
 /**
@@ -130,7 +209,7 @@ protected:
  * @returns a CChainParams* of the chosen chain.
  * @throws a std::runtime_error if the chain is not supported.
  */
-std::unique_ptr<CChainParams> CreateChainParams(const std::string& chain);
+std::unique_ptr<const CChainParams> CreateChainParams(const ArgsManager& args, const std::string& chain);
 
 /**
  * Return the currently selected parameters. This won't change after app
@@ -139,34 +218,14 @@ std::unique_ptr<CChainParams> CreateChainParams(const std::string& chain);
 const CChainParams &Params();
 
 /**
- * Sets the params returned by Params() to those for the given BIP70 chain name.
+ * Sets the params returned by Params() to those for the given chain name.
  * @throws std::runtime_error when the chain is not supported.
  */
 void SelectParams(const std::string& chain);
 
 /**
- * Allows modifying the Version Bits regtest parameters.
+ *Set the arguments for chainparams
  */
-void UpdateVersionBitsParameters(Consensus::DeploymentPos d, int64_t nStartTime, int64_t nTimeout, int64_t nWindowSize, int64_t nThreshold);
-
-/**
- * Allows modifying the DIP3 activation and enforcement height
- */
-void UpdateDIP3Parameters(int nActivationHeight, int nEnforcementHeight);
-
-/**
- * Allows modifying the budget regtest parameters.
- */
-void UpdateBudgetParameters(int nMasternodePaymentsStartBlock, int nBudgetPaymentsStartBlock, int nSuperblockStartBlock);
-
-/**
- * Allows modifying the subsidy and difficulty devnet parameters.
- */
-void UpdateDevnetSubsidyAndDiffParams(int nMinimumDifficultyBlocks, int nHighSubsidyBlocks, int nHighSubsidyFactor);
-
-/**
- * Allows modifying the LLMQ type for ChainLocks.
- */
-void UpdateDevnetLLMQChainLocks(Consensus::LLMQType llmqType);
+void SetupChainParamsOptions(ArgsManager& argsman);
 
 #endif // BITCOIN_CHAINPARAMS_H

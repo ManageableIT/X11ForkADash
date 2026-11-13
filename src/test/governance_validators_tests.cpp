@@ -1,26 +1,26 @@
-// Copyright (c) 2014-2019 The Dash Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "governance/governance-validators.h"
-#include "utilstrencodings.h"
+#include <governance/object.h>
+#include <util/strencodings.h>
 
-#include "data/proposals_valid.json.h"
-#include "data/proposals_invalid.json.h"
+#include <test/data/proposals_invalid.json.h>
+#include <test/data/proposals_valid.json.h>
 
-#include "test/test_dash.h"
+#include <test/util/json.h>
+#include <test/util/setup_common.h>
 
-#include <iostream>
-#include <fstream>
+#include <limits>
 #include <string>
 
 #include <boost/test/unit_test.hpp>
 
 #include <univalue.h>
 
-extern UniValue read_json(const std::string& jsondata);
-
 BOOST_FIXTURE_TEST_SUITE(governance_validators_tests, BasicTestingSetup)
 
-std::string CreateEncodedProposalObject(const UniValue& objJSON)
+static std::string CreateEncodedProposalObject(const UniValue& objJSON)
 {
     UniValue innerArray(UniValue::VARR);
     innerArray.push_back(UniValue("proposal"));
@@ -28,7 +28,7 @@ std::string CreateEncodedProposalObject(const UniValue& objJSON)
 
     UniValue outerArray(UniValue::VARR);
     outerArray.push_back(innerArray);
-    
+
     std::string strData = outerArray.write();
     std::string strHex = HexStr(strData);
     return strHex;
@@ -41,24 +41,25 @@ BOOST_AUTO_TEST_CASE(valid_proposals_test)
 
     BOOST_CHECK_MESSAGE(tests.size(), "Empty `tests`");
     for(size_t i = 0; i < tests.size(); ++i) {
-        const UniValue& objProposal = tests[i];
+        const UniValue& objProposal = tests[i][0];
+        bool fAllowScript = tests[i][1].get_bool();
 
         // legacy format
         std::string strHexData1 = CreateEncodedProposalObject(objProposal);
-        CProposalValidator validator1(strHexData1, true);
-        BOOST_CHECK_MESSAGE(validator1.Validate(false), validator1.GetErrorMessages());
-        BOOST_CHECK_MESSAGE(!validator1.Validate(), validator1.GetErrorMessages());
+        std::string strErrorMessages;
+        BOOST_CHECK(!governance::ValidateProposal(strHexData1, strErrorMessages, /*fCheckExpiration=*/true, fAllowScript));
+        BOOST_CHECK_EQUAL(strErrorMessages, "Proposal must be a JSON object;JSON parsing error;");
 
-        // legacy format w/validation flag off
-        CProposalValidator validator0(strHexData1, false);
-        BOOST_CHECK(!validator0.Validate());
-        BOOST_CHECK_EQUAL(validator0.GetErrorMessages(), "Legacy proposal serialization format not allowed;JSON parsing error;");
-
-        // new format
+        // current format
         std::string strHexData2 = HexStr(objProposal.write());
-        CProposalValidator validator2(strHexData2, false);
-        BOOST_CHECK_MESSAGE(validator2.Validate(false), validator2.GetErrorMessages());
-        BOOST_CHECK_MESSAGE(!validator2.Validate(), validator2.GetErrorMessages());
+        std::string strErrorMessages2;
+        BOOST_CHECK_MESSAGE(governance::ValidateProposal(strHexData2, strErrorMessages2, /*fCheckExpiration=*/false,
+                                                         fAllowScript),
+                            strErrorMessages2);
+        std::string strErrorMessages3;
+        BOOST_CHECK_MESSAGE(!governance::ValidateProposal(strHexData2, strErrorMessages3, /*fCheckExpiration=*/true,
+                                                          fAllowScript),
+                            strErrorMessages3);
     }
 }
 
@@ -74,14 +75,38 @@ BOOST_AUTO_TEST_CASE(invalid_proposals_test)
 
         // legacy format
         std::string strHexData1 = CreateEncodedProposalObject(objProposal);
-        CProposalValidator validator1(strHexData1, true);
-        BOOST_CHECK_MESSAGE(!validator1.Validate(false), validator1.GetErrorMessages());
+        std::string strErrorMessages1;
+        BOOST_CHECK(!governance::ValidateProposal(strHexData1, strErrorMessages1, /*fCheckExpiration=*/true,
+                                                  /*fAllowScript=*/false));
+        std::string strErrorMessages1b;
+        BOOST_CHECK_MESSAGE(!governance::ValidateProposal(strHexData1, strErrorMessages1b, /*fCheckExpiration=*/false,
+                                                          /*fAllowScript=*/false),
+                            strErrorMessages1b);
 
-        // new format
+        // current format
         std::string strHexData2 = HexStr(objProposal.write());
-        CProposalValidator validator2(strHexData2, false);
-        BOOST_CHECK_MESSAGE(!validator2.Validate(false), validator2.GetErrorMessages());
+        std::string strErrorMessages2;
+        BOOST_CHECK_MESSAGE(!governance::ValidateProposal(strHexData2, strErrorMessages2, /*fCheckExpiration=*/false,
+                                                          /*fAllowScript=*/false),
+                            strErrorMessages2);
     }
+}
+
+BOOST_AUTO_TEST_CASE(extreme_end_epoch_is_not_expired)
+{
+    UniValue proposal{UniValue::VOBJ};
+    proposal.pushKV("end_epoch", std::numeric_limits<int64_t>::max());
+    proposal.pushKV("name", "extreme-end-epoch");
+    proposal.pushKV("payment_address", "XpG61qAVhdyN7AqVZQsHfJL7AEk4dPVinc");
+    proposal.pushKV("payment_amount", 1.0);
+    proposal.pushKV("start_epoch", std::numeric_limits<int64_t>::max() - 1);
+    proposal.pushKV("type", 1);
+    proposal.pushKV("url", "https://example.com");
+
+    std::string error;
+    BOOST_CHECK_MESSAGE(governance::ValidateProposal(HexStr(proposal.write()), error,
+                                                     /*fCheckExpiration=*/true, /*fAllowScript=*/false),
+                        error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

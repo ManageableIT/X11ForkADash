@@ -1,63 +1,89 @@
-// Copyright (c) 2017-2019 The Dash Core developers
+// Copyright (c) 2017-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef DASH_CBTX_H
-#define DASH_CBTX_H
+#ifndef BITCOIN_EVO_CBTX_H
+#define BITCOIN_EVO_CBTX_H
 
-#include "consensus/validation.h"
-#include "primitives/transaction.h"
-#include "univalue.h"
+#include <bls/bls.h>
 
+#include <primitives/transaction.h>
+
+#include <univalue.h>
+
+#include <optional>
+#include <string>
+
+class BlockValidationState;
 class CBlock;
 class CBlockIndex;
+class CDeterministicMNList;
+class TxValidationState;
+struct RPCResult;
+
+namespace llmq {
+class CQuorumBlockProcessor;
+}// namespace llmq
 
 // coinbase transaction
 class CCbTx
 {
 public:
-    static const uint16_t CURRENT_VERSION = 2;
+    enum class Version : uint16_t {
+        INVALID = 0,
+        MERKLE_ROOT_MNLIST = 1,
+        MERKLE_ROOT_QUORUMS = 2,
+        CLSIG_AND_BALANCE = 3,
+        MERKLE_ROOT_ASSETUNLOCKS = 4,
+        UNKNOWN,
+    };
 
-public:
-    uint16_t nVersion{CURRENT_VERSION};
+    static constexpr auto SPECIALTX_TYPE = TRANSACTION_COINBASE;
+    Version nVersion{Version::MERKLE_ROOT_QUORUMS};
     int32_t nHeight{0};
     uint256 merkleRootMNList;
     uint256 merkleRootQuorums;
+    uint32_t bestCLHeightDiff{0};
+    CBLSSignature bestCLSignature;
+    CAmount creditPoolBalance{0};
+    /** Merkle root over the instance hashes of the block's version 2+ asset unlock transactions
+     *  (block order; null when there are none). Their txids exclude the quorum signing info, so
+     *  the block's merkle root does not commit to it; this root restores that commitment. */
+    uint256 merkleRootAssetUnlocks;
 
-public:
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
+    SERIALIZE_METHODS(CCbTx, obj)
     {
-        READWRITE(nVersion);
-        READWRITE(nHeight);
-        READWRITE(merkleRootMNList);
+        READWRITE(obj.nVersion, obj.nHeight, obj.merkleRootMNList);
 
-        if (nVersion >= 2) {
-            READWRITE(merkleRootQuorums);
+        if (obj.nVersion >= Version::MERKLE_ROOT_QUORUMS) {
+            READWRITE(obj.merkleRootQuorums);
+            if (obj.nVersion >= Version::CLSIG_AND_BALANCE) {
+                READWRITE(COMPACTSIZE(obj.bestCLHeightDiff));
+                READWRITE(obj.bestCLSignature);
+                READWRITE(obj.creditPoolBalance);
+                if (obj.nVersion >= Version::MERKLE_ROOT_ASSETUNLOCKS) {
+                    READWRITE(obj.merkleRootAssetUnlocks);
+                }
+            }
         }
+
     }
 
+    [[nodiscard]] static RPCResult GetJsonHelp(const std::string& key, bool optional);
     std::string ToString() const;
 
-    void ToJson(UniValue& obj) const
-    {
-        obj.clear();
-        obj.setObject();
-        obj.push_back(Pair("version", (int)nVersion));
-        obj.push_back(Pair("height", (int)nHeight));
-        obj.push_back(Pair("merkleRootMNList", merkleRootMNList.ToString()));
-        if (nVersion >= 2) {
-            obj.push_back(Pair("merkleRootQuorums", merkleRootQuorums.ToString()));
-        }
-    }
+    [[nodiscard]] UniValue ToJson() const;
 };
+template<> struct is_serializable_enum<CCbTx::Version> : std::true_type {};
 
-bool CheckCbTx(const CTransaction& tx, const CBlockIndex* pindexPrev, CValidationState& state);
+bool CheckCbTx(const CCbTx& cbTx, const CBlockIndex* pindexPrev, bool is_v24_active, TxValidationState& state);
 
-bool CheckCbTxMerkleRoots(const CBlock& block, const CBlockIndex* pindex, CValidationState& state);
-bool CalcCbTxMerkleRootMNList(const CBlock& block, const CBlockIndex* pindexPrev, uint256& merkleRootRet, CValidationState& state);
-bool CalcCbTxMerkleRootQuorums(const CBlock& block, const CBlockIndex* pindexPrev, uint256& merkleRootRet, CValidationState& state);
+bool CalcCbTxMerkleRootQuorums(const CBlock& block, const CBlockIndex* pindexPrev,
+                               const llmq::CQuorumBlockProcessor& quorum_block_processor, uint256& merkleRootRet,
+                               BlockValidationState& state);
+uint256 CalcCbTxMerkleRootAssetUnlocks(const CBlock& block);
 
-#endif //DASH_CBTX_H
+std::optional<std::pair<CBLSSignature, uint32_t>> GetNonNullCoinbaseChainlock(const CBlockIndex* pindex);
+std::optional<std::pair<CBLSSignature, uint32_t>> GetNonNullCoinbaseChainlock(const CBlock& block, int32_t height);
+
+#endif // BITCOIN_EVO_CBTX_H

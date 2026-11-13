@@ -1,13 +1,22 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2015 The Bitcoin Core developers
+// Copyright (c) 2009-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "primitives/transaction.h"
+#include <primitives/transaction.h>
 
-#include "hash.h"
-#include "tinyformat.h"
-#include "utilstrencodings.h"
+#include <consensus/amount.h>
+#include <hash.h>
+#include <script/script.h>
+#include <serialize.h>
+#include <streams.h>
+#include <tinyformat.h>
+#include <uint256.h>
+#include <util/strencodings.h>
+#include <version.h>
+
+#include <cassert>
+#include <stdexcept>
 
 std::string COutPoint::ToString() const
 {
@@ -48,11 +57,10 @@ std::string CTxIn::ToString() const
     return str;
 }
 
-CTxOut::CTxOut(const CAmount& nValueIn, CScript scriptPubKeyIn, int nRoundsIn)
+CTxOut::CTxOut(const CAmount& nValueIn, CScript scriptPubKeyIn)
 {
     nValue = nValueIn;
     scriptPubKey = scriptPubKeyIn;
-    nRounds = nRoundsIn;
 }
 
 std::string CTxOut::ToString() const
@@ -61,10 +69,28 @@ std::string CTxOut::ToString() const
 }
 
 CMutableTransaction::CMutableTransaction() : nVersion(CTransaction::CURRENT_VERSION), nType(TRANSACTION_NORMAL), nLockTime(0) {}
-CMutableTransaction::CMutableTransaction(const CTransaction& tx) : nVersion(tx.nVersion), nType(tx.nType), vin(tx.vin), vout(tx.vout), nLockTime(tx.nLockTime), vExtraPayload(tx.vExtraPayload) {}
+CMutableTransaction::CMutableTransaction(const CTransaction& tx) : vin(tx.vin), vout(tx.vout), nVersion(tx.nVersion), nType(tx.nType), nLockTime(tx.nLockTime), vExtraPayload(tx.vExtraPayload) {}
+
+namespace {
+/** The txid of a version 2+ asset unlock excludes the quorum signing info - the fields Platform
+ *  changes when it re-signs an expired withdrawal - so every re-signed instance of one withdrawal
+ *  shares one txid and spends of its outputs stay valid across re-signs. The payload is the last
+ *  field serialized (see CTransaction::Serialize), so the signing info occupies the trailing bytes
+ *  of the stream. The full-serialization hash remains available as CTransaction::GetInstanceHash()
+ *  and is committed to by the coinbase transaction. */
+template <typename TxType>
+uint256 ComputeStableUnlockHash(const TxType& tx)
+{
+    CDataStream ss(SER_GETHASH, PROTOCOL_VERSION);
+    ss << tx;
+    std::fill(ss.end() - ASSET_UNLOCK_QUORUM_INFO_SIZE, ss.end(), std::byte{0});
+    return Hash(ss);
+}
+} // anonymous namespace
 
 uint256 CMutableTransaction::GetHash() const
 {
+    if (IsAssetUnlockWithStableTxid(*this)) return ComputeStableUnlockHash(*this);
     return SerializeHash(*this);
 }
 
@@ -88,28 +114,34 @@ std::string CMutableTransaction::ToString() const
 
 uint256 CTransaction::ComputeHash() const
 {
+    if (IsAssetUnlockWithStableTxid(*this)) return ComputeStableUnlockHash(*this);
     return SerializeHash(*this);
 }
 
-/* For backward compatibility, the hash is initialized to 0. TODO: remove the need for this default constructor entirely. */
-CTransaction::CTransaction() : nVersion(CTransaction::CURRENT_VERSION), nType(TRANSACTION_NORMAL), vin(), vout(), nLockTime(0), hash() {}
-CTransaction::CTransaction(const CMutableTransaction &tx) : nVersion(tx.nVersion), nType(tx.nType), vin(tx.vin), vout(tx.vout), nLockTime(tx.nLockTime), vExtraPayload(tx.vExtraPayload), hash(ComputeHash()) {}
-CTransaction::CTransaction(CMutableTransaction &&tx) : nVersion(tx.nVersion), nType(tx.nType), vin(std::move(tx.vin)), vout(std::move(tx.vout)), nLockTime(tx.nLockTime), vExtraPayload(tx.vExtraPayload), hash(ComputeHash()) {}
+uint256 CTransaction::GetInstanceHash() const
+{
+    if (IsAssetUnlockWithStableTxid(*this)) return SerializeHash(*this);
+    return hash;
+}
+
+CTransaction::CTransaction(const CMutableTransaction& tx) : vin(tx.vin), vout(tx.vout), nVersion(tx.nVersion), nType(tx.nType), nLockTime(tx.nLockTime), vExtraPayload(tx.vExtraPayload), hash{ComputeHash()} {}
+CTransaction::CTransaction(CMutableTransaction&& tx) : vin(std::move(tx.vin)), vout(std::move(tx.vout)), nVersion(tx.nVersion), nType(tx.nType), nLockTime(tx.nLockTime), vExtraPayload(tx.vExtraPayload), hash{ComputeHash()} {}
 
 CAmount CTransaction::GetValueOut() const
 {
     CAmount nValueOut = 0;
     for (const auto& tx_out : vout) {
-        nValueOut += tx_out.nValue;
-        if (!MoneyRange(tx_out.nValue) || !MoneyRange(nValueOut))
+        if (!MoneyRange(tx_out.nValue) || !MoneyRange(nValueOut + tx_out.nValue))
             throw std::runtime_error(std::string(__func__) + ": value out of range");
+        nValueOut += tx_out.nValue;
     }
+    assert(MoneyRange(nValueOut));
     return nValueOut;
 }
 
 unsigned int CTransaction::GetTotalSize() const
 {
-    return ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
+    return ::GetSerializeSize(*this, PROTOCOL_VERSION);
 }
 
 std::string CTransaction::ToString() const

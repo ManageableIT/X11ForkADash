@@ -1,5 +1,5 @@
-// Copyright (c) 2012-2014 The Bitcoin Core developers
-// Copyright (c) 2014-2020 The Dash Core developers
+// Copyright (c) 2012-2020 The Bitcoin Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -11,44 +11,71 @@
  */
 
 
-static const int PROTOCOL_VERSION = 70216;
+static const int PROTOCOL_VERSION = 70242;
 
 //! initial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 209;
 
-//! In this version, 'getheaders' was introduced.
-static const int GETHEADERS_VERSION = 70077;
-
 //! disconnect from peers older than this proto version
-static const int MIN_PEER_PROTO_VERSION = 70213;
+static const int MIN_PEER_PROTO_VERSION = 70221;
 
-//! nTime field added to CAddress, starting with this version;
-//! if possible, avoid requesting addresses nodes older than this
-static const int CADDR_TIME_VERSION = 31402;
+//! minimum proto version of masternode to accept in DKGs
+static const int MIN_MASTERNODE_PROTO_VERSION = 70242;
 
-//! BIP 0031, pong message, is enabled for all versions AFTER this one
-static const int BIP0031_VERSION = 60000;
+//! ADDRV2 was introduced in this version
+static const int ADDRV2_PROTO_VERSION = 70223;
 
-//! "filter*" commands are disabled without NODE_BLOOM after and including this version
-static const int NO_BLOOM_VERSION = 70201;
+//! BLS scheme was introduced in this version
+static const int BLS_SCHEME_PROTO_VERSION = 70225;
 
-//! "sendheaders" command and announcing blocks with headers starts with this version
-static const int SENDHEADERS_VERSION = 70201;
+//! Masternode type was introduced in this version
+static const int DMN_TYPE_PROTO_VERSION = 70227;
 
-//! DIP0001 was activated in this version
-static const int DIP0001_PROTOCOL_VERSION = 70208;
+//! Versioned Simplified Masternode List Entries were introduced in this version
+static const int SMNLE_VERSIONED_PROTO_VERSION = 70228;
 
-//! short-id-based block download starts with this version
-static const int SHORT_IDS_BLOCKS_VERSION = 70209;
+//! Versioned Simplified Masternode List Entries were introduced in this version
+static const int MNLISTDIFF_VERSION_ORDER = 70229;
 
-//! introduction of DIP3/deterministic masternodes
-static const int DMN_PROTO_VERSION = 70213;
+//! Masternode type was introduced in this version
+static const int MNLISTDIFF_CHAINLOCKS_PROTO_VERSION = 70230;
 
-//! introduction of LLMQs
-static const int LLMQS_PROTO_VERSION = 70214;
+//! Legacy ISLOCK messages and a corresponding INV were dropped in this version
+static const int NO_LEGACY_ISLOCK_PROTO_VERSION = 70231;
 
-//! introduction of SENDDSQUEUE
-//! TODO we can remove this in 0.15.0.0
-static const int SENDDSQUEUE_PROTO_VERSION = 70214;
+//! Inventory type for DSQ messages added
+static const int DSQ_INV_VERSION = 70234;
+
+//! Maximum header count for HEADRES2 message was increased from 2000 to 8000 in this version
+static const int INCREASE_MAX_HEADERS2_VERSION = 70235;
+
+//! BIP324 v2 transport with Dash short IDs (128-167) introduced
+static const int BIP324_DASH_BASELINE_VERSION = 70235;
+
+//! Behavior of QRINFO is changed in this protocol version
+static const int EFFICIENT_QRINFO_VERSION = 70236;
+
+//! cycleHash in isdlock message switched to using quorum's base block in this version
+static const int ISDLOCK_CYCLEHASH_UPDATE_VERSION = 70237;
+
+//! Introduced new p2p message platform pose BAN
+static const int PLATFORM_BAN_VERSION = 70238;
+
+//! Ban of re-propagation of old QFCOMMIT enforcement
+static const int QFCOMMIT_STALE_REPROP_BAN_VERSION = 70239;
+
+//! PLATFORMBAN added to v2 short IDs (short ID 168)
+static const int PLATFORMBAN_V2_SHORT_ID_VERSION = 70240;
+
+//! CoinJoin denomination promotion/demotion (rebalance) sessions introduced in this version;
+//! dsa messages gained a version-gated flags field and only peers at or above this version
+//! may join rebalance-capable mixing sessions
+static const int COINJOIN_REBALANCE_VERSION = 70241;
+
+//! MSG_ASSET_UNLOCK inventory type added: version 2 asset unlocks are announced by instance hash
+//! so that re-signed instances of one withdrawal (sharing its txid) propagate
+static const int ASSET_UNLOCK_INV_VERSION = 70242;
+
+// Make sure that none of the values above collide with `ADDRV2_FORMAT`.
 
 #endif // BITCOIN_VERSION_H

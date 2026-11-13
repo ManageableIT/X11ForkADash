@@ -1,4 +1,7 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
+# Copyright (c) 2018-2023 The Dash Core developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #
 
 try:
@@ -8,8 +11,8 @@ except ImportError as e:
 import traceback
 import sys
 import os
-sys.path.append(os.getcwd())
 import common_helpers
+sys.path.append(os.getcwd())
 
 
 class UsedSizeCommand (gdb.Command):
@@ -26,7 +29,7 @@ class UsedSizeCommand (gdb.Command):
     def get_type(cls, obj_name):
         return gdb.parse_and_eval(obj_name).type
 
-    def invoke(self, arg, from_tty):
+    def invoke(self, arg, _from_tty):
         try:
             args = gdb.string_to_argv(arg)
             obj = gdb.parse_and_eval(args[1])

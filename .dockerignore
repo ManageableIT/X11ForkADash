@@ -1,0 +1,7 @@
+**
+!contrib/containers/ci/ci.Dockerfile
+!contrib/containers/ci/ci-slim.Dockerfile
+!contrib/containers/deploy/Dockerfile
+!contrib/containers/develop/Dockerfile
+!.python-version
+!ci/lint

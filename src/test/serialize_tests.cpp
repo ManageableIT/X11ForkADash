@@ -1,13 +1,21 @@
-// Copyright (c) 2012-2015 The Bitcoin Core developers
+// Copyright (c) 2012-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "serialize.h"
-#include "streams.h"
-#include "hash.h"
-#include "test/test_dash.h"
+#include <hash.h>
+#include <serialize.h>
+#include <streams.h>
+#include <test/util/setup_common.h>
+#include <util/strencodings.h>
 
 #include <stdint.h>
+
+#include <ios>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include <boost/test/unit_test.hpp>
 
@@ -19,29 +27,31 @@ protected:
     int intval;
     bool boolval;
     std::string stringval;
-    const char* charstrval;
+    char charstrval[16];
     CTransactionRef txval;
 public:
     CSerializeMethodsTestSingle() = default;
-    CSerializeMethodsTestSingle(int intvalin, bool boolvalin, std::string stringvalin, const char* charstrvalin, CTransaction txvalin) : intval(intvalin), boolval(boolvalin), stringval(std::move(stringvalin)), charstrval(charstrvalin), txval(MakeTransactionRef(txvalin)){}
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITE(intval);
-        READWRITE(boolval);
-        READWRITE(stringval);
-        READWRITE(FLATDATA(charstrval));
-        READWRITE(txval);
+    CSerializeMethodsTestSingle(int intvalin, bool boolvalin, std::string stringvalin, const uint8_t* charstrvalin, const CTransactionRef& txvalin) : intval(intvalin), boolval(boolvalin), stringval(std::move(stringvalin)), txval(txvalin)
+    {
+        memcpy(charstrval, charstrvalin, sizeof(charstrval));
     }
 
-    bool operator==(const CSerializeMethodsTestSingle& rhs)
+    SERIALIZE_METHODS(CSerializeMethodsTestSingle, obj)
     {
-        return  intval == rhs.intval && \
-                boolval == rhs.boolval && \
-                stringval == rhs.stringval && \
-                strcmp(charstrval, rhs.charstrval) == 0 && \
-                *txval == *rhs.txval;
+        READWRITE(obj.intval);
+        READWRITE(obj.boolval);
+        READWRITE(obj.stringval);
+        READWRITE(obj.charstrval);
+        READWRITE(obj.txval);
+    }
+
+    bool operator==(const CSerializeMethodsTestSingle& rhs) const
+    {
+        return intval == rhs.intval &&
+               boolval == rhs.boolval &&
+               stringval == rhs.stringval &&
+               strcmp(charstrval, rhs.charstrval) == 0 &&
+               *txval == *rhs.txval;
     }
 };
 
@@ -49,17 +59,16 @@ class CSerializeMethodsTestMany : public CSerializeMethodsTestSingle
 {
 public:
     using CSerializeMethodsTestSingle::CSerializeMethodsTestSingle;
-    ADD_SERIALIZE_METHODS;
 
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITEMANY(intval, boolval, stringval, FLATDATA(charstrval), txval);
+    SERIALIZE_METHODS(CSerializeMethodsTestMany, obj)
+    {
+        READWRITE(obj.intval, obj.boolval, obj.stringval, obj.charstrval, obj.txval);
     }
 };
 
 BOOST_AUTO_TEST_CASE(sizes)
 {
-    BOOST_CHECK_EQUAL(sizeof(char), GetSerializeSize(char(0), 0));
+    BOOST_CHECK_EQUAL(sizeof(unsigned char), GetSerializeSize((unsigned char)0, 0));
     BOOST_CHECK_EQUAL(sizeof(int8_t), GetSerializeSize(int8_t(0), 0));
     BOOST_CHECK_EQUAL(sizeof(uint8_t), GetSerializeSize(uint8_t(0), 0));
     BOOST_CHECK_EQUAL(sizeof(int16_t), GetSerializeSize(int16_t(0), 0));
@@ -68,135 +77,49 @@ BOOST_AUTO_TEST_CASE(sizes)
     BOOST_CHECK_EQUAL(sizeof(uint32_t), GetSerializeSize(uint32_t(0), 0));
     BOOST_CHECK_EQUAL(sizeof(int64_t), GetSerializeSize(int64_t(0), 0));
     BOOST_CHECK_EQUAL(sizeof(uint64_t), GetSerializeSize(uint64_t(0), 0));
-    BOOST_CHECK_EQUAL(sizeof(float), GetSerializeSize(float(0), 0));
-    BOOST_CHECK_EQUAL(sizeof(double), GetSerializeSize(double(0), 0));
-    // Bool is serialized as char
-    BOOST_CHECK_EQUAL(sizeof(char), GetSerializeSize(bool(0), 0));
+    // Bool is serialized as uint8_t
+    BOOST_CHECK_EQUAL(sizeof(uint8_t), GetSerializeSize(bool(0), 0));
 
     // Sanity-check GetSerializeSize and c++ type matching
-    BOOST_CHECK_EQUAL(GetSerializeSize(char(0), 0), 1);
-    BOOST_CHECK_EQUAL(GetSerializeSize(int8_t(0), 0), 1);
-    BOOST_CHECK_EQUAL(GetSerializeSize(uint8_t(0), 0), 1);
-    BOOST_CHECK_EQUAL(GetSerializeSize(int16_t(0), 0), 2);
-    BOOST_CHECK_EQUAL(GetSerializeSize(uint16_t(0), 0), 2);
-    BOOST_CHECK_EQUAL(GetSerializeSize(int32_t(0), 0), 4);
-    BOOST_CHECK_EQUAL(GetSerializeSize(uint32_t(0), 0), 4);
-    BOOST_CHECK_EQUAL(GetSerializeSize(int64_t(0), 0), 8);
-    BOOST_CHECK_EQUAL(GetSerializeSize(uint64_t(0), 0), 8);
-    BOOST_CHECK_EQUAL(GetSerializeSize(float(0), 0), 4);
-    BOOST_CHECK_EQUAL(GetSerializeSize(double(0), 0), 8);
-    BOOST_CHECK_EQUAL(GetSerializeSize(bool(0), 0), 1);
-}
-
-BOOST_AUTO_TEST_CASE(floats_conversion)
-{
-    // Choose values that map unambiguously to binary floating point to avoid
-    // rounding issues at the compiler side.
-    BOOST_CHECK_EQUAL(ser_uint32_to_float(0x00000000), 0.0F);
-    BOOST_CHECK_EQUAL(ser_uint32_to_float(0x3f000000), 0.5F);
-    BOOST_CHECK_EQUAL(ser_uint32_to_float(0x3f800000), 1.0F);
-    BOOST_CHECK_EQUAL(ser_uint32_to_float(0x40000000), 2.0F);
-    BOOST_CHECK_EQUAL(ser_uint32_to_float(0x40800000), 4.0F);
-    BOOST_CHECK_EQUAL(ser_uint32_to_float(0x44444444), 785.066650390625F);
-
-    BOOST_CHECK_EQUAL(ser_float_to_uint32(0.0F), 0x00000000);
-    BOOST_CHECK_EQUAL(ser_float_to_uint32(0.5F), 0x3f000000);
-    BOOST_CHECK_EQUAL(ser_float_to_uint32(1.0F), 0x3f800000);
-    BOOST_CHECK_EQUAL(ser_float_to_uint32(2.0F), 0x40000000);
-    BOOST_CHECK_EQUAL(ser_float_to_uint32(4.0F), 0x40800000);
-    BOOST_CHECK_EQUAL(ser_float_to_uint32(785.066650390625F), 0x44444444);
-}
-
-BOOST_AUTO_TEST_CASE(doubles_conversion)
-{
-    // Choose values that map unambiguously to binary floating point to avoid
-    // rounding issues at the compiler side.
-    BOOST_CHECK_EQUAL(ser_uint64_to_double(0x0000000000000000ULL), 0.0);
-    BOOST_CHECK_EQUAL(ser_uint64_to_double(0x3fe0000000000000ULL), 0.5);
-    BOOST_CHECK_EQUAL(ser_uint64_to_double(0x3ff0000000000000ULL), 1.0);
-    BOOST_CHECK_EQUAL(ser_uint64_to_double(0x4000000000000000ULL), 2.0);
-    BOOST_CHECK_EQUAL(ser_uint64_to_double(0x4010000000000000ULL), 4.0);
-    BOOST_CHECK_EQUAL(ser_uint64_to_double(0x4088888880000000ULL), 785.066650390625);
-
-    BOOST_CHECK_EQUAL(ser_double_to_uint64(0.0), 0x0000000000000000ULL);
-    BOOST_CHECK_EQUAL(ser_double_to_uint64(0.5), 0x3fe0000000000000ULL);
-    BOOST_CHECK_EQUAL(ser_double_to_uint64(1.0), 0x3ff0000000000000ULL);
-    BOOST_CHECK_EQUAL(ser_double_to_uint64(2.0), 0x4000000000000000ULL);
-    BOOST_CHECK_EQUAL(ser_double_to_uint64(4.0), 0x4010000000000000ULL);
-    BOOST_CHECK_EQUAL(ser_double_to_uint64(785.066650390625), 0x4088888880000000ULL);
-}
-/*
-Python code to generate the below hashes:
-
-    def reversed_hex(x):
-        return binascii.hexlify(''.join(reversed(x)))
-    def dsha256(x):
-        return hashlib.sha256(hashlib.sha256(x).digest()).digest()
-
-    reversed_hex(dsha256(''.join(struct.pack('<f', x) for x in range(0,1000)))) == '8e8b4cf3e4df8b332057e3e23af42ebc663b61e0495d5e7e32d85099d7f3fe0c'
-    reversed_hex(dsha256(''.join(struct.pack('<d', x) for x in range(0,1000)))) == '43d0c82591953c4eafe114590d392676a01585d25b25d433557f0d7878b23f96'
-*/
-BOOST_AUTO_TEST_CASE(floats)
-{
-    CDataStream ss(SER_DISK, 0);
-    // encode
-    for (int i = 0; i < 1000; i++) {
-        ss << float(i);
-    }
-    BOOST_CHECK(Hash(ss.begin(), ss.end()) == uint256S("8e8b4cf3e4df8b332057e3e23af42ebc663b61e0495d5e7e32d85099d7f3fe0c"));
-
-    // decode
-    for (int i = 0; i < 1000; i++) {
-        float j;
-        ss >> j;
-        BOOST_CHECK_MESSAGE(i == j, "decoded:" << j << " expected:" << i);
-    }
-}
-
-BOOST_AUTO_TEST_CASE(doubles)
-{
-    CDataStream ss(SER_DISK, 0);
-    // encode
-    for (int i = 0; i < 1000; i++) {
-        ss << double(i);
-    }
-    BOOST_CHECK(Hash(ss.begin(), ss.end()) == uint256S("43d0c82591953c4eafe114590d392676a01585d25b25d433557f0d7878b23f96"));
-
-    // decode
-    for (int i = 0; i < 1000; i++) {
-        double j;
-        ss >> j;
-        BOOST_CHECK_MESSAGE(i == j, "decoded:" << j << " expected:" << i);
-    }
+    BOOST_CHECK_EQUAL(GetSerializeSize((unsigned char)0, 0), 1U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(int8_t(0), 0), 1U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(uint8_t(0), 0), 1U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(int16_t(0), 0), 2U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(uint16_t(0), 0), 2U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(int32_t(0), 0), 4U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(uint32_t(0), 0), 4U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(int64_t(0), 0), 8U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(uint64_t(0), 0), 8U);
+    BOOST_CHECK_EQUAL(GetSerializeSize(bool(0), 0), 1U);
 }
 
 BOOST_AUTO_TEST_CASE(varints)
 {
     // encode
 
-    CDataStream ss(SER_DISK, 0);
-    CDataStream::size_type size = 0;
+    DataStream ss{};
+    DataStream::size_type size = 0;
     for (int i = 0; i < 100000; i++) {
-        ss << VARINT(i);
-        size += ::GetSerializeSize(VARINT(i), 0, 0);
+        ss << VARINT_MODE(i, VarIntMode::NONNEGATIVE_SIGNED);
+        size += ::GetSerializeSize(VARINT_MODE(i, VarIntMode::NONNEGATIVE_SIGNED), 0);
         BOOST_CHECK(size == ss.size());
     }
 
     for (uint64_t i = 0;  i < 100000000000ULL; i += 999999937) {
         ss << VARINT(i);
-        size += ::GetSerializeSize(VARINT(i), 0, 0);
+        size += ::GetSerializeSize(VARINT(i), 0);
         BOOST_CHECK(size == ss.size());
     }
 
     // decode
     for (int i = 0; i < 100000; i++) {
         int j = -1;
-        ss >> VARINT(j);
+        ss >> VARINT_MODE(j, VarIntMode::NONNEGATIVE_SIGNED);
         BOOST_CHECK_MESSAGE(i == j, "decoded:" << j << " expected:" << i);
     }
 
     for (uint64_t i = 0;  i < 100000000000ULL; i += 999999937) {
-        uint64_t j = -1;
+        uint64_t j = std::numeric_limits<uint64_t>::max();
         ss >> VARINT(j);
         BOOST_CHECK_MESSAGE(i == j, "decoded:" << j << " expected:" << i);
     }
@@ -204,28 +127,28 @@ BOOST_AUTO_TEST_CASE(varints)
 
 BOOST_AUTO_TEST_CASE(varints_bitpatterns)
 {
-    CDataStream ss(SER_DISK, 0);
-    ss << VARINT(0); BOOST_CHECK_EQUAL(HexStr(ss), "00"); ss.clear();
-    ss << VARINT(0x7f); BOOST_CHECK_EQUAL(HexStr(ss), "7f"); ss.clear();
-    ss << VARINT((int8_t)0x7f); BOOST_CHECK_EQUAL(HexStr(ss), "7f"); ss.clear();
-    ss << VARINT(0x80); BOOST_CHECK_EQUAL(HexStr(ss), "8000"); ss.clear();
-    ss << VARINT((uint8_t)0x80); BOOST_CHECK_EQUAL(HexStr(ss), "8000"); ss.clear();
-    ss << VARINT(0x1234); BOOST_CHECK_EQUAL(HexStr(ss), "a334"); ss.clear();
-    ss << VARINT((int16_t)0x1234); BOOST_CHECK_EQUAL(HexStr(ss), "a334"); ss.clear();
-    ss << VARINT(0xffff); BOOST_CHECK_EQUAL(HexStr(ss), "82fe7f"); ss.clear();
-    ss << VARINT((uint16_t)0xffff); BOOST_CHECK_EQUAL(HexStr(ss), "82fe7f"); ss.clear();
-    ss << VARINT(0x123456); BOOST_CHECK_EQUAL(HexStr(ss), "c7e756"); ss.clear();
-    ss << VARINT((int32_t)0x123456); BOOST_CHECK_EQUAL(HexStr(ss), "c7e756"); ss.clear();
+    DataStream ss{};
+    ss << VARINT_MODE(0, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "00"); ss.clear();
+    ss << VARINT_MODE(0x7f, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "7f"); ss.clear();
+    ss << VARINT_MODE(int8_t{0x7f}, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "7f"); ss.clear();
+    ss << VARINT_MODE(0x80, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "8000"); ss.clear();
+    ss << VARINT(uint8_t{0x80}); BOOST_CHECK_EQUAL(HexStr(ss), "8000"); ss.clear();
+    ss << VARINT_MODE(0x1234, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "a334"); ss.clear();
+    ss << VARINT_MODE(int16_t{0x1234}, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "a334"); ss.clear();
+    ss << VARINT_MODE(0xffff, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "82fe7f"); ss.clear();
+    ss << VARINT(uint16_t{0xffff}); BOOST_CHECK_EQUAL(HexStr(ss), "82fe7f"); ss.clear();
+    ss << VARINT_MODE(0x123456, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "c7e756"); ss.clear();
+    ss << VARINT_MODE(int32_t{0x123456}, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "c7e756"); ss.clear();
     ss << VARINT(0x80123456U); BOOST_CHECK_EQUAL(HexStr(ss), "86ffc7e756"); ss.clear();
-    ss << VARINT((uint32_t)0x80123456U); BOOST_CHECK_EQUAL(HexStr(ss), "86ffc7e756"); ss.clear();
+    ss << VARINT(uint32_t{0x80123456U}); BOOST_CHECK_EQUAL(HexStr(ss), "86ffc7e756"); ss.clear();
     ss << VARINT(0xffffffff); BOOST_CHECK_EQUAL(HexStr(ss), "8efefefe7f"); ss.clear();
-    ss << VARINT(0x7fffffffffffffffLL); BOOST_CHECK_EQUAL(HexStr(ss), "fefefefefefefefe7f"); ss.clear();
+    ss << VARINT_MODE(0x7fffffffffffffffLL, VarIntMode::NONNEGATIVE_SIGNED); BOOST_CHECK_EQUAL(HexStr(ss), "fefefefefefefefe7f"); ss.clear();
     ss << VARINT(0xffffffffffffffffULL); BOOST_CHECK_EQUAL(HexStr(ss), "80fefefefefefefefe7f"); ss.clear();
 }
 
 BOOST_AUTO_TEST_CASE(compactsize)
 {
-    CDataStream ss(SER_DISK, 0);
+    DataStream ss{};
     std::vector<char>::size_type i, j;
 
     for (i = 1; i <= MAX_SIZE; i *= 2)
@@ -248,95 +171,101 @@ static bool isCanonicalException(const std::ios_base::failure& ex)
 
     // The string returned by what() can be different for different platforms.
     // Instead of directly comparing the ex.what() with an expected string,
-    // create an instance of exception to see if ex.what() matches 
-    // the expected explanatory string returned by the exception instance. 
+    // create an instance of exception to see if ex.what() matches
+    // the expected explanatory string returned by the exception instance.
     return strcmp(expectedException.what(), ex.what()) == 0;
 }
 
+BOOST_AUTO_TEST_CASE(vector_bool)
+{
+    std::vector<uint8_t> vec1{1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 1};
+    std::vector<bool> vec2{1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 1};
+
+    BOOST_CHECK(vec1 == std::vector<uint8_t>(vec2.begin(), vec2.end()));
+    BOOST_CHECK(SerializeHash(vec1) == SerializeHash(vec2));
+}
+
+
+//! The message the bound throws. Matching it exactly keeps these tests from passing on an
+//! unrelated short read, which is the very failure mode the bound replaces.
+static constexpr std::string_view BOUND_REJECTION{"declared size exceeds remaining bytes"};
+
+/**
+ * DYNBITSET must not allocate from an attacker-declared CompactSize when the remaining stream
+ * is far too small to hold the claimed bit payload. A handful of bytes claiming ~1e6 bits is
+ * the amplification primitive: ReadCompactSize permits up to 33,554,432, which would resize a
+ * std::vector<bool> to ~4 MiB and allocate another ~4 MiB byte buffer before the short read
+ * throws. The claim below is deliberately modest so the pre-fix path also stays safe on CI.
+ */
+BOOST_AUTO_TEST_CASE(dynbitset_rejects_oversized_declared_length)
+{
+    constexpr uint64_t kClaimedBits = 1'000'000;
+
+    CDataStream s(SER_NETWORK, PROTOCOL_VERSION);
+    WriteCompactSize(s, kClaimedBits);
+    // No bit payload follows, so the remaining size is zero.
+
+    std::vector<bool> bits;
+    BOOST_CHECK_EXCEPTION(s >> DYNBITSET(bits), std::ios_base::failure,
+                          HasReason(std::string{BOUND_REJECTION}));
+    // Rejection has to precede the resize, so the destination must still hold its exact
+    // pre-deserialization state. Merely falling short of the declared size would also be
+    // satisfied by an allocation that happened and was then abandoned.
+    BOOST_CHECK(bits.empty());
+}
+
+/** The largest bit count accepted by ReadCompactSize must still round-trip unchanged. */
+BOOST_AUTO_TEST_CASE(dynbitset_accepts_maximum_size)
+{
+    constexpr size_t kSize = MAX_SIZE;
+    std::vector<bool> original(kSize, false);
+    for (size_t i = 0; i < kSize; i += 3) {
+        original[i] = true;
+    }
+
+    CDataStream s(SER_NETWORK, PROTOCOL_VERSION);
+    s << DYNBITSET(original);
+
+    std::vector<bool> decoded;
+    s >> DYNBITSET(decoded);
+    BOOST_CHECK(decoded == original);
+}
 
 BOOST_AUTO_TEST_CASE(noncanonical)
 {
     // Write some non-canonical CompactSize encodings, and
     // make sure an exception is thrown when read back.
-    CDataStream ss(SER_DISK, 0);
+    DataStream ss{};
     std::vector<char>::size_type n;
 
     // zero encoded with three bytes:
-    ss.write("\xfd\x00\x00", 3);
+    ss.write(MakeByteSpan("\xfd\x00\x00").first(3));
     BOOST_CHECK_EXCEPTION(ReadCompactSize(ss), std::ios_base::failure, isCanonicalException);
 
     // 0xfc encoded with three bytes:
-    ss.write("\xfd\xfc\x00", 3);
+    ss.write(MakeByteSpan("\xfd\xfc\x00").first(3));
     BOOST_CHECK_EXCEPTION(ReadCompactSize(ss), std::ios_base::failure, isCanonicalException);
 
     // 0xfd encoded with three bytes is OK:
-    ss.write("\xfd\xfd\x00", 3);
+    ss.write(MakeByteSpan("\xfd\xfd\x00").first(3));
     n = ReadCompactSize(ss);
     BOOST_CHECK(n == 0xfd);
 
     // zero encoded with five bytes:
-    ss.write("\xfe\x00\x00\x00\x00", 5);
+    ss.write(MakeByteSpan("\xfe\x00\x00\x00\x00").first(5));
     BOOST_CHECK_EXCEPTION(ReadCompactSize(ss), std::ios_base::failure, isCanonicalException);
 
     // 0xffff encoded with five bytes:
-    ss.write("\xfe\xff\xff\x00\x00", 5);
+    ss.write(MakeByteSpan("\xfe\xff\xff\x00\x00").first(5));
     BOOST_CHECK_EXCEPTION(ReadCompactSize(ss), std::ios_base::failure, isCanonicalException);
 
     // zero encoded with nine bytes:
-    ss.write("\xff\x00\x00\x00\x00\x00\x00\x00\x00", 9);
+    ss.write(MakeByteSpan("\xff\x00\x00\x00\x00\x00\x00\x00\x00").first(9));
     BOOST_CHECK_EXCEPTION(ReadCompactSize(ss), std::ios_base::failure, isCanonicalException);
 
     // 0x01ffffff encoded with nine bytes:
-    ss.write("\xff\xff\xff\xff\x01\x00\x00\x00\x00", 9);
+    ss.write(MakeByteSpan("\xff\xff\xff\xff\x01\x00\x00\x00\x00").first(9));
     BOOST_CHECK_EXCEPTION(ReadCompactSize(ss), std::ios_base::failure, isCanonicalException);
-}
-
-BOOST_AUTO_TEST_CASE(insert_delete)
-{
-    // Test inserting/deleting bytes.
-    CDataStream ss(SER_DISK, 0);
-    BOOST_CHECK_EQUAL(ss.size(), 0);
-
-    ss.write("\x00\x01\x02\xff", 4);
-    BOOST_CHECK_EQUAL(ss.size(), 4);
-
-    char c = (char)11;
-
-    // Inserting at beginning/end/middle:
-    ss.insert(ss.begin(), c);
-    BOOST_CHECK_EQUAL(ss.size(), 5);
-    BOOST_CHECK_EQUAL(ss[0], c);
-    BOOST_CHECK_EQUAL(ss[1], 0);
-
-    ss.insert(ss.end(), c);
-    BOOST_CHECK_EQUAL(ss.size(), 6);
-    BOOST_CHECK_EQUAL(ss[4], (char)0xff);
-    BOOST_CHECK_EQUAL(ss[5], c);
-
-    ss.insert(ss.begin()+2, c);
-    BOOST_CHECK_EQUAL(ss.size(), 7);
-    BOOST_CHECK_EQUAL(ss[2], c);
-
-    // Delete at beginning/end/middle
-    ss.erase(ss.begin());
-    BOOST_CHECK_EQUAL(ss.size(), 6);
-    BOOST_CHECK_EQUAL(ss[0], 0);
-
-    ss.erase(ss.begin()+ss.size()-1);
-    BOOST_CHECK_EQUAL(ss.size(), 5);
-    BOOST_CHECK_EQUAL(ss[4], (char)0xff);
-
-    ss.erase(ss.begin()+1);
-    BOOST_CHECK_EQUAL(ss.size(), 4);
-    BOOST_CHECK_EQUAL(ss[0], 0);
-    BOOST_CHECK_EQUAL(ss[1], 1);
-    BOOST_CHECK_EQUAL(ss[2], 2);
-    BOOST_CHECK_EQUAL(ss[3], (char)0xff);
-
-    // Make sure GetAndClear does the right thing:
-    CSerializeData d;
-    ss.GetAndClear(d);
-    BOOST_CHECK_EQUAL(ss.size(), 0);
 }
 
 // Change struct size and check if it can be deserialized
@@ -345,29 +274,32 @@ struct old_version
 {
     int field1;
 
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITE(field1);
+    SERIALIZE_METHODS(old_version, obj)
+    {
+        READWRITE(obj.field1);
     }
-};\
+};
+
 struct new_version
 {
     int field1;
     int field2;
 
-    ADD_SERIALIZE_METHODS;
+    template<typename Stream>
+    void Serialize(Stream &s) const
+    {
+        s << field1 << field2;
+    }
 
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITE(field1);
-        if(ser_action.ForRead() && (s.size() == 0))
-        {
+    template<typename Stream>
+    void Unserialize(Stream &s)
+    {
+        s >> field1;
+        if (s.size() == 0) {
             field2 = 0;
             return;
         }
-        READWRITE(field2);
+        s >> field2;
     }
 };
 
@@ -393,10 +325,11 @@ BOOST_AUTO_TEST_CASE(class_methods)
     int intval(100);
     bool boolval(true);
     std::string stringval("testing");
-    const char* charstrval("testing charstr");
+    const uint8_t charstrval[16]{"testing charstr"};
     CMutableTransaction txval;
-    CSerializeMethodsTestSingle methodtest1(intval, boolval, stringval, charstrval, txval);
-    CSerializeMethodsTestMany methodtest2(intval, boolval, stringval, charstrval, txval);
+    CTransactionRef tx_ref{MakeTransactionRef(txval)};
+    CSerializeMethodsTestSingle methodtest1(intval, boolval, stringval, charstrval, tx_ref);
+    CSerializeMethodsTestMany methodtest2(intval, boolval, stringval, charstrval, tx_ref);
     CSerializeMethodsTestSingle methodtest3;
     CSerializeMethodsTestMany methodtest4;
     CDataStream ss(SER_DISK, PROTOCOL_VERSION);
@@ -409,9 +342,218 @@ BOOST_AUTO_TEST_CASE(class_methods)
     BOOST_CHECK(methodtest2 == methodtest3);
     BOOST_CHECK(methodtest3 == methodtest4);
 
-    CDataStream ss2(SER_DISK, PROTOCOL_VERSION, intval, boolval, stringval, FLATDATA(charstrval), txval);
+    CDataStream ss2{SER_DISK, PROTOCOL_VERSION};
+    ss2 << intval << boolval << stringval << charstrval << txval;
     ss2 >> methodtest3;
     BOOST_CHECK(methodtest3 == methodtest4);
+    {
+        DataStream ds;
+        const std::string in{"ab"};
+        ds << Span{in} << std::byte{'c'};
+        std::array<std::byte, 2> out;
+        std::byte out_3;
+        ds >> Span{out} >> out_3;
+        BOOST_CHECK_EQUAL(out.at(0), std::byte{'a'});
+        BOOST_CHECK_EQUAL(out.at(1), std::byte{'b'});
+        BOOST_CHECK_EQUAL(out_3, std::byte{'c'});
+    }
+}
+
+namespace {
+// Element formatter that counts Unser invocations, so a test can prove the
+// bounded reader rejected an oversized wire count *before* touching any
+// element. Ser delegates to the default Serialize so wire compatibility is
+// preserved.
+struct CountingFormatter
+{
+    static inline size_t unser_calls = 0;
+    static void Reset() { unser_calls = 0; }
+
+    template<typename Stream, typename T>
+    void Ser(Stream& s, const T& t) { Serialize(s, t); }
+
+    template<typename Stream, typename T>
+    void Unser(Stream& s, T& t)
+    {
+        ++unser_calls;
+        Unserialize(s, t);
+    }
+};
+
+bool IsLimitExceededFailure(const std::ios_base::failure& e)
+{
+    return std::string_view{e.what()}.find("Vector length limit exceeded") != std::string_view::npos;
+}
+
+// Struct with a compile-time bounded vector member, so the compile-time
+// formatter can be exercised end-to-end via ordinary << / >> and READWRITE.
+struct LimitedVecFive
+{
+    std::vector<int> v;
+    SERIALIZE_METHODS(LimitedVecFive, obj) { READWRITE(LIMITED_VECTOR(obj.v, 5)); }
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(unserialize_vector_with_max_size)
+{
+    // Within-limit round trip: an ordinary vector encoding decodes cleanly and
+    // the wire bytes are byte-identical to the unbounded writer's output, so
+    // this helper stays interchangeable with the standard vector Unserialize.
+    {
+        DataStream ss;
+        const std::vector<int> v{1, 2, 3};
+        ss << v;
+
+        DataStream ref;
+        ref << v;
+        BOOST_CHECK_EQUAL_COLLECTIONS(ss.begin(), ss.end(), ref.begin(), ref.end());
+
+        std::vector<int> out;
+        BOOST_CHECK(UnserializeVectorWithMaxSize(ss, out, /*max_size=*/8));
+        BOOST_CHECK(out == v);
+        BOOST_CHECK_EQUAL(ss.size(), 0U);
+    }
+
+    // Zero limit rejects any non-empty vector and accepts an empty one.
+    {
+        DataStream ss;
+        ss << std::vector<int>{};
+        std::vector<int> out{99};
+        BOOST_CHECK(UnserializeVectorWithMaxSize(ss, out, /*max_size=*/0));
+        BOOST_CHECK(out.empty());
+    }
+    {
+        DataStream ss;
+        ss << std::vector<int>{1};
+        std::vector<int> out;
+        BOOST_CHECK(!UnserializeVectorWithMaxSize(ss, out, /*max_size=*/0));
+        BOOST_CHECK(out.empty());
+    }
+
+    // Exact-limit boundary decodes; one-over boundary is rejected and no
+    // element decoding happens.
+    {
+        DataStream ss;
+        const std::vector<int> v{10, 20, 30, 40};
+        ss << v;
+        std::vector<int> out;
+        BOOST_CHECK(UnserializeVectorWithMaxSize(ss, out, /*max_size=*/4));
+        BOOST_CHECK(out == v);
+    }
+    {
+        DataStream ss;
+        const std::vector<int> v{10, 20, 30, 40, 50};
+        ss << v;
+        std::vector<int> out;
+        CountingFormatter::Reset();
+        BOOST_CHECK(!UnserializeVectorWithMaxSize<CountingFormatter>(ss, out, /*max_size=*/4));
+        BOOST_CHECK(out.empty());
+        BOOST_CHECK_EQUAL(CountingFormatter::unser_calls, 0U);
+    }
+
+    // Custom element formatter path: within-limit, verify the element formatter
+    // actually runs; over-limit, verify it does not.
+    {
+        DataStream ss;
+        ss << std::vector<int>{7, 8, 9};
+        std::vector<int> out;
+        CountingFormatter::Reset();
+        BOOST_CHECK(UnserializeVectorWithMaxSize<CountingFormatter>(ss, out, /*max_size=*/8));
+        BOOST_CHECK_EQUAL(CountingFormatter::unser_calls, 3U);
+        BOOST_CHECK((out == std::vector<int>{7, 8, 9}));
+    }
+
+    // A wire count at MAX_SIZE still hits the caller's own limit (8) first and
+    // returns false without decoding any element.
+    {
+        static_assert(MAX_SIZE < std::numeric_limits<uint32_t>::max(),
+                      "MAX_SIZE must fit in a 32-bit CompactSize prefix for this test");
+        DataStream ss;
+        ss << uint8_t{0xfe};
+        ss << static_cast<uint32_t>(MAX_SIZE);
+        std::vector<int> out;
+        CountingFormatter::Reset();
+        BOOST_CHECK(!UnserializeVectorWithMaxSize<CountingFormatter>(ss, out, /*max_size=*/8));
+        BOOST_CHECK(out.empty());
+        BOOST_CHECK_EQUAL(CountingFormatter::unser_calls, 0U);
+    }
+
+    // Counts above MAX_SIZE throw from ReadCompactSize before the caller's
+    // gate is consulted — these are malformed at the CompactSize level.
+    {
+        DataStream ss;
+        ss << uint8_t{0xfe};
+        ss << static_cast<uint32_t>(MAX_SIZE + 1);
+        std::vector<int> out;
+        BOOST_CHECK_THROW((void)UnserializeVectorWithMaxSize<CountingFormatter>(ss, out, /*max_size=*/8),
+                          std::ios_base::failure);
+    }
+    {
+        DataStream ss;
+        ss << uint8_t{0xff};
+        ss << uint64_t{0x100000000ULL + MAX_SIZE};
+        std::vector<int> out;
+        BOOST_CHECK_THROW((void)UnserializeVectorWithMaxSize<CountingFormatter>(ss, out, /*max_size=*/8),
+                          std::ios_base::failure);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(limited_vector_formatter_compile_time)
+{
+    // The compile-time formatter's wire format matches the ordinary vector
+    // encoding — a struct wrapping std::vector<int> under LIMITED_VECTOR must
+    // produce the same bytes as the raw vector.
+    {
+        DataStream ss_lim;
+        DataStream ss_ord;
+        LimitedVecFive obj{{1, 2, 3}};
+        ss_lim << obj;
+        ss_ord << obj.v;
+        BOOST_CHECK_EQUAL_COLLECTIONS(ss_lim.begin(), ss_lim.end(),
+                                      ss_ord.begin(), ss_ord.end());
+
+        LimitedVecFive round;
+        ss_lim >> round;
+        BOOST_CHECK(round.v == obj.v);
+    }
+
+    // At the exact limit: round-trips.
+    {
+        DataStream ss;
+        LimitedVecFive obj{{1, 2, 3, 4, 5}};
+        ss << obj;
+        LimitedVecFive round;
+        BOOST_REQUIRE_NO_THROW(ss >> round);
+        BOOST_CHECK(round.v == obj.v);
+    }
+
+    // Over the limit: rejected with the sentinel failure, before element decode.
+    {
+        DataStream ss;
+        ss << std::vector<int>{1, 2, 3, 4, 5, 6};
+        LimitedVecFive round;
+        BOOST_CHECK_EXCEPTION(ss >> round, std::ios_base::failure, IsLimitExceededFailure);
+        BOOST_CHECK(round.v.empty());
+    }
+
+    // Serialization stays unbounded: writing an over-limit vector through the
+    // formatter must still emit the ordinary wire format, so producers remain
+    // compatible with the standard reader. Reading it back through the
+    // unbounded std::vector path succeeds even though the LIMITED_VECTOR reader
+    // would reject it.
+    {
+        DataStream ss;
+        const std::vector<int> big{1, 2, 3, 4, 5, 6, 7};
+        ss << Using<LimitedVectorFormatter<5>>(big);
+
+        DataStream ref;
+        ref << big;
+        BOOST_CHECK_EQUAL_COLLECTIONS(ss.begin(), ss.end(), ref.begin(), ref.end());
+
+        std::vector<int> out;
+        BOOST_REQUIRE_NO_THROW(ss >> out);
+        BOOST_CHECK(out == big);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

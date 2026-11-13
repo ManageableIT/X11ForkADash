@@ -1,127 +1,183 @@
-// Copyright (c) 2011-2015 The Bitcoin Core developers
-// Copyright (c) 2014-2020 The Dash Core developers
+// Copyright (c) 2011-2022 The Bitcoin Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "guiutil.h"
+#if defined(HAVE_CONFIG_H)
+#include <config/bitcoin-config.h>
+#endif
 
-#include "bitcoinaddressvalidator.h"
-#include "bitcoinunits.h"
-#include "qvalidatedlineedit.h"
-#include "walletmodel.h"
+#include <qt/guiutil.h>
 
-#include "fs.h"
-#include "primitives/transaction.h"
-#include "init.h"
-#include "policy/policy.h"
-#include "protocol.h"
-#include "script/script.h"
-#include "script/standard.h"
-#include "util.h"
+#include <qt/bitcoinaddressvalidator.h>
+#include <qt/bitcoinunits.h>
+#include <qt/qvalidatedlineedit.h>
+#include <qt/sendcoinsrecipient.h>
+
+#include <base58.h>
+#include <chainparams.h>
+#include <interfaces/node.h>
+#include <key_io.h>
+#include <policy/policy.h>
+#include <primitives/transaction.h>
+#include <protocol.h>
+#include <script/script.h>
+#include <script/standard.h>
+#include <util/fs.h>
+#include <util/fs_helpers.h>
+#include <util/system.h>
+#include <util/time.h>
+
+#include <cmath>
 
 #ifdef WIN32
-#ifdef _WIN32_WINNT
-#undef _WIN32_WINNT
-#endif
-#define _WIN32_WINNT 0x0501
-#ifdef _WIN32_IE
-#undef _WIN32_IE
-#endif
-#define _WIN32_IE 0x0501
-#define WIN32_LEAN_AND_MEAN 1
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include "shellapi.h"
-#include "shlobj.h"
-#include "shlwapi.h"
+#include <shellapi.h>
+#include <shlobj.h>
+#include <shlwapi.h>
 #endif
 
-#include <boost/scoped_array.hpp>
-
+#include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QClipboard>
 #include <QDateTime>
 #include <QDesktopServices>
-#include <QDesktopWidget>
-#include <QDoubleValidator>
+#include <QDialog>
 #include <QFileDialog>
 #include <QFont>
-#include <QLineEdit>
+#include <QFontDatabase>
+#include <QFontMetrics>
+#include <QGuiApplication>
+#include <QJsonObject>
+#include <QKeySequence>
+#include <QLatin1String>
+#include <QList>
+#include <QLocale>
+#include <QMenu>
+#include <QMouseEvent>
+#include <QPluginLoader>
+#include <QProgressDialog>
+#include <QRegularExpression>
+#include <QScreen>
 #include <QSettings>
+#include <QShortcut>
+#include <QSize>
+#include <QStandardPaths>
+#include <QString>
 #include <QTextDocument> // for Qt::mightBeRichText
 #include <QThread>
-#include <QMouseEvent>
-
-#if QT_VERSION < 0x050000
-#include <QUrl>
-#else
 #include <QUrlQuery>
+#include <QVBoxLayout>
+
+#include <chrono>
+#include <exception>
+#include <algorithm>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#if defined(Q_OS_MACOS)
+
+#include <QProcess>
+
+void ForceActivation();
 #endif
 
-#if QT_VERSION >= 0x50200
-#include <QFontDatabase>
-#endif
-
-static fs::detail::utf8_codecvt_facet utf8;
-
-#if defined(Q_OS_MAC)
-extern double NSAppKitVersionNumber;
-#if !defined(NSAppKitVersionNumber10_8)
-#define NSAppKitVersionNumber10_8 1187
-#endif
-#if !defined(NSAppKitVersionNumber10_9)
-#define NSAppKitVersionNumber10_9 1265
-#endif
-#endif
+using namespace std::chrono_literals;
 
 namespace GUIUtil {
 
+static RecursiveMutex cs_css;
+// The default stylesheet directory
+static const QString defaultStylesheetDirectory = ":css";
+// The actual stylesheet directory
+static QString stylesheetDirectory = defaultStylesheetDirectory;
+// The name of the traditional theme
+static const QString traditionalTheme = "Traditional";
 // The theme to set by default if settings are missing or incorrect
 static const QString defaultTheme = "Light";
 // The prefix a theme name should have if we want to apply dark colors and styles to it
 static const QString darkThemePrefix = "Dark";
+// The theme to set as a base one for non-traditional themes
+static const QString generalTheme = "general";
+// Mapping theme => css file
+static const std::map<QString, QString> mapThemeToStyle{
+    {generalTheme, "general.css"},
+    {"Dark", "dark.css"},
+    {"Light", "light.css"},
+    {"Traditional", "traditional.css"},
+};
+
+#ifdef Q_OS_MACOS
+// Contains all widgets where the macOS focus rect has been disabled.
+static std::set<QWidget*> setRectsDisabled;
+#endif
 
 static const std::map<ThemedColor, QColor> themedColors = {
-    { ThemedColor::DEFAULT, QColor(0, 0, 0) },
+    { ThemedColor::DEFAULT, QColor(85, 85, 85) },
     { ThemedColor::UNCONFIRMED, QColor(128, 128, 128) },
-    { ThemedColor::NEGATIVE, QColor(255, 0, 0) },
+    { ThemedColor::BLUE, QColor(0, 141, 228) },
+    { ThemedColor::ORANGE, QColor(199, 147, 4) },
+    { ThemedColor::RED, QColor(168, 72, 50) },
+    { ThemedColor::GREEN, QColor(94, 140, 65) },
     { ThemedColor::BAREADDRESS, QColor(140, 140, 140) },
     { ThemedColor::TX_STATUS_OPENUNTILDATE, QColor(64, 64, 255) },
-    { ThemedColor::TX_STATUS_OFFLINE, QColor(192, 192, 192) },
-    { ThemedColor::TX_STATUS_DANGER, QColor(200, 100, 100) },
-    { ThemedColor::TX_STATUS_LOCKED, QColor(0, 128, 255) },
+    { ThemedColor::BACKGROUND_WIDGET, QColor(234, 234, 236) },
+    { ThemedColor::BORDER_WIDGET, QColor(220, 220, 220) },
+    { ThemedColor::BACKGROUND_NETSTATS, QColor(210, 210, 210, 230) },
+    { ThemedColor::BORDER_NETSTATS, QColor(180, 180, 180) },
+    { ThemedColor::QR_PIXEL, QColor(85, 85, 85) },
+    { ThemedColor::ICON_ALTERNATIVE_COLOR, QColor(167, 167, 167) },
 };
 
 static const std::map<ThemedColor, QColor> themedDarkColors = {
-    { ThemedColor::DEFAULT, QColor(170, 170, 170) },
-    { ThemedColor::UNCONFIRMED, QColor(204, 204, 204) },
-    { ThemedColor::NEGATIVE, QColor(255, 69, 0) },
+    { ThemedColor::DEFAULT, QColor(199, 199, 199) },
+    { ThemedColor::UNCONFIRMED, QColor(170, 170, 170) },
+    { ThemedColor::BLUE, QColor(0, 89, 154) },
+    { ThemedColor::ORANGE, QColor(199, 147, 4) },
+    { ThemedColor::RED, QColor(168, 72, 50) },
+    { ThemedColor::GREEN, QColor(94, 140, 65) },
     { ThemedColor::BAREADDRESS, QColor(140, 140, 140) },
     { ThemedColor::TX_STATUS_OPENUNTILDATE, QColor(64, 64, 255) },
-    { ThemedColor::TX_STATUS_OFFLINE, QColor(192, 192, 192) },
-    { ThemedColor::TX_STATUS_DANGER, QColor(200, 100, 100) },
-    { ThemedColor::TX_STATUS_LOCKED, QColor(0, 128, 255) },
+    { ThemedColor::BACKGROUND_WIDGET, QColor(45, 45, 46) },
+    { ThemedColor::BORDER_WIDGET, QColor(74, 74, 75) },
+    { ThemedColor::BACKGROUND_NETSTATS, QColor(45, 45, 46, 230) },
+    { ThemedColor::BORDER_NETSTATS, QColor(74, 74, 75) },
+    { ThemedColor::QR_PIXEL, QColor(199, 199, 199) },
+    { ThemedColor::ICON_ALTERNATIVE_COLOR, QColor(74, 74, 75) },
 };
 
 static const std::map<ThemedStyle, QString> themedStyles = {
-    { ThemedStyle::TS_INVALID, "background:#FF8080;" },
-    { ThemedStyle::TS_ERROR, "color:red;" },
-    { ThemedStyle::TS_SUCCESS, "color:green;" },
-    { ThemedStyle::TS_COMMAND, "color:#006060;" },
-    { ThemedStyle::TS_PRIMARY, "color:black;" },
-    { ThemedStyle::TS_SECONDARY, "color:#808080;" },
+    { ThemedStyle::TS_INVALID, "border: 3px solid #a84832;" },
+    { ThemedStyle::TS_ERROR, "color:#a84832;" },
+    { ThemedStyle::TS_WARNING, "color:#999900;" },
+    { ThemedStyle::TS_SUCCESS, "color:#5e8c41;" },
+    { ThemedStyle::TS_COMMAND, "color:#008de4;" },
+    { ThemedStyle::TS_PRIMARY, "color:#333;" },
+    { ThemedStyle::TS_SECONDARY, "color:#444;" },
 };
 
 static const std::map<ThemedStyle, QString> themedDarkStyles = {
-    { ThemedStyle::TS_INVALID, "background:#ff4500;" },
-    { ThemedStyle::TS_ERROR, "color:#ff4500;" },
-    { ThemedStyle::TS_SUCCESS, "color:green;" },
-    { ThemedStyle::TS_COMMAND, "color:#0cc;" },
-    { ThemedStyle::TS_PRIMARY, "color:#ccc;" },
+    { ThemedStyle::TS_INVALID, "border: 3px solid #a84832;" },
+    { ThemedStyle::TS_ERROR, "color:#a84832;" },
+    { ThemedStyle::TS_WARNING, "color:#999900;" },
+    { ThemedStyle::TS_SUCCESS, "color:#5e8c41;" },
+    { ThemedStyle::TS_COMMAND, "color:#00599a;" },
+    { ThemedStyle::TS_PRIMARY, "color:#c7c7c7;" },
     { ThemedStyle::TS_SECONDARY, "color:#aaa;" },
 };
+
+std::string defaultUIPlatform()
+{
+#if defined(Q_OS_MACOS)
+    return "macosx";
+#elif defined(Q_OS_WIN)
+    return "windows";
+#else
+    return "other";
+#endif
+}
 
 QColor getThemedQColor(ThemedColor color)
 {
@@ -135,32 +191,59 @@ QString getThemedStyleQString(ThemedStyle style)
     return theme.startsWith(darkThemePrefix) ? themedDarkStyles.at(style) : themedStyles.at(style);
 }
 
+QIcon getIcon(const QString& strIcon, const ThemedColor color, const ThemedColor colorAlternative, const QString& strIconPath)
+{
+    QColor qcolor = getThemedQColor(color);
+    QColor qcolorAlternative = getThemedQColor(colorAlternative);
+    QIcon icon(strIconPath + strIcon);
+    QIcon themedIcon;
+    for (const QSize& size : icon.availableSizes()) {
+        QImage image(icon.pixmap(size).toImage());
+        image = image.convertToFormat(QImage::Format_ARGB32);
+        for (int x = 0; x < image.width(); ++x) {
+            for (int y = 0; y < image.height(); ++y) {
+                const QRgb rgb = image.pixel(x, y);
+                QColor* pColor;
+                if ((rgb & RGB_MASK) < RGB_HALF) {
+                    pColor = &qcolor;
+                } else {
+                    pColor = &qcolorAlternative;
+                }
+                image.setPixel(x, y, qRgba(pColor->red(), pColor->green(), pColor->blue(), qAlpha(rgb)));
+            }
+        }
+        themedIcon.addPixmap(QPixmap::fromImage(image));
+    }
+    return themedIcon;
+}
+
+QIcon getIcon(const QString& strIcon, const ThemedColor color, const QString& strIconPath)
+{
+    return getIcon(strIcon, color, ThemedColor::ICON_ALTERNATIVE_COLOR, strIconPath);
+}
+
+void setIcon(QAbstractButton* button, const QString& strIcon, const ThemedColor color, const ThemedColor colorAlternative, const QSize& size)
+{
+    button->setIcon(getIcon(strIcon, color, colorAlternative));
+    button->setIconSize(size);
+}
+
+void setIcon(QAbstractButton* button, const QString& strIcon, const ThemedColor color, const QSize& size)
+{
+    setIcon(button, strIcon, color, ThemedColor::ICON_ALTERNATIVE_COLOR, size);
+}
+
 QString dateTimeStr(const QDateTime &date)
 {
-    return date.date().toString(Qt::SystemLocaleShortDate) + QString(" ") + date.toString("hh:mm");
+    return QLocale::system().toString(date.date(), QLocale::ShortFormat) + QString(" ") + date.toString("hh:mm");
 }
 
 QString dateTimeStr(qint64 nTime)
 {
-    return dateTimeStr(QDateTime::fromTime_t((qint32)nTime));
+    return dateTimeStr(QDateTime::fromSecsSinceEpoch((qint32)nTime));
 }
 
-QFont fixedPitchFont()
-{
-#if QT_VERSION >= 0x50200
-    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
-#else
-    QFont font("Monospace");
-#if QT_VERSION >= 0x040800
-    font.setStyleHint(QFont::Monospace);
-#else
-    font.setStyleHint(QFont::TypeWriter);
-#endif
-    return font;
-#endif
-}
-
-// Just some dummy data to generate an convincing random-looking (but consistent) address
+// Just some dummy data to generate a convincing random-looking (but consistent) address
 static const uint8_t dummydata[] = {0xeb,0x15,0x23,0x1d,0xfc,0xeb,0x60,0x92,0x58,0x86,0xb6,0x7d,0x06,0x52,0x99,0x92,0x59,0x15,0xae,0xb1,0x72,0xc0,0x66,0x47};
 
 // Generate a dummy address with invalid CRC, starting with the network prefix.
@@ -169,36 +252,30 @@ static std::string DummyAddress(const CChainParams &params)
     std::vector<unsigned char> sourcedata = params.Base58Prefix(CChainParams::PUBKEY_ADDRESS);
     sourcedata.insert(sourcedata.end(), dummydata, dummydata + sizeof(dummydata));
     for(int i=0; i<256; ++i) { // Try every trailing byte
-        std::string s = EncodeBase58(sourcedata.data(), sourcedata.data() + sourcedata.size());
-        if (!CBitcoinAddress(s).IsValid())
+        std::string s = EncodeBase58(sourcedata);
+        if (!IsValidDestinationString(s)) {
             return s;
+        }
         sourcedata[sourcedata.size()-1] += 1;
     }
     return "";
 }
 
-void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent)
+void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent, bool fAllowURI)
 {
     parent->setFocusProxy(widget);
 
-    widget->setFont(fixedPitchFont());
-#if QT_VERSION >= 0x040700
     // We don't want translators to use own addresses in translations
     // and this is the only place, where this address is supplied.
     widget->setPlaceholderText(QObject::tr("Enter a Dash address (e.g. %1)").arg(
         QString::fromStdString(DummyAddress(Params()))));
-#endif
-    widget->setValidator(new BitcoinAddressEntryValidator(parent));
+    widget->setValidator(new BitcoinAddressEntryValidator(parent, fAllowURI));
     widget->setCheckValidator(new BitcoinAddressCheckValidator(parent));
 }
 
-void setupAmountWidget(QLineEdit *widget, QWidget *parent)
+void AddButtonShortcut(QAbstractButton* button, const QKeySequence& shortcut)
 {
-    QDoubleValidator *amountValidator = new QDoubleValidator(parent);
-    amountValidator->setDecimals(8);
-    amountValidator->setBottom(0.0);
-    widget->setValidator(amountValidator);
-    widget->setAlignment(Qt::AlignRight|Qt::AlignVCenter);
+    QObject::connect(new QShortcut(shortcut, button), &QShortcut::activated, [button]() { button->animateClick(); });
 }
 
 bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
@@ -215,12 +292,8 @@ bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
     }
     rv.amount = 0;
 
-#if QT_VERSION < 0x050000
-    QList<QPair<QString, QString> > items = uri.queryItems();
-#else
     QUrlQuery uriQuery(uri);
     QList<QPair<QString, QString> > items = uriQuery.queryItems();
-#endif
 
     for (QList<QPair<QString, QString> >::iterator i = items.begin(); i != items.end(); i++)
     {
@@ -250,8 +323,7 @@ bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
         {
             if(!i->second.isEmpty())
             {
-                if(!BitcoinUnits::parse(BitcoinUnits::DASH, i->second, &rv.amount))
-                {
+                if (!BitcoinUnits::parse(BitcoinUnit::DASH, i->second, &rv.amount)) {
                     return false;
                 }
             }
@@ -270,16 +342,14 @@ bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
 
 bool parseBitcoinURI(QString uri, SendCoinsRecipient *out)
 {
-    // Convert dash:// to dash:
-    //
-    //    Cannot handle this later, because dash:// will cause Qt to see the part after // as host,
-    //    which will lower-case it (and thus invalidate the address).
-    if(uri.startsWith("dash://", Qt::CaseInsensitive))
-    {
-        uri.replace(0, 7, "dash:");
-    }
     QUrl uriInstance(uri);
     return parseBitcoinURI(uriInstance, out);
+}
+
+bool validateBitcoinURI(const QString& uri)
+{
+    SendCoinsRecipient rcp;
+    return parseBitcoinURI(uri, &rcp);
 }
 
 QString formatBitcoinURI(const SendCoinsRecipient &info)
@@ -289,7 +359,7 @@ QString formatBitcoinURI(const SendCoinsRecipient &info)
 
     if (info.amount)
     {
-        ret += QString("?amount=%1").arg(BitcoinUnits::format(BitcoinUnits::DASH, info.amount, false, BitcoinUnits::separatorNever));
+        ret += QString("?amount=%1").arg(BitcoinUnits::format(BitcoinUnit::DASH, info.amount, false, BitcoinUnits::SeparatorStyle::NEVER));
         paramCount++;
     }
 
@@ -310,22 +380,33 @@ QString formatBitcoinURI(const SendCoinsRecipient &info)
     return ret;
 }
 
-bool isDust(const QString& address, const CAmount& amount)
+bool isDust(interfaces::Node& node, const QString& address, const CAmount& amount)
 {
-    CTxDestination dest = CBitcoinAddress(address.toStdString()).Get();
+    CTxDestination dest = DecodeDestination(address.toStdString());
     CScript script = GetScriptForDestination(dest);
     CTxOut txOut(amount, script);
-    return IsDust(txOut, ::dustRelayFee);
+    return IsDust(txOut, node.getDustRelayFee());
+}
+
+QString formatAmount(BitcoinUnit unit, CAmount amount, bool is_signed, std::optional<uint8_t> truncate)
+{
+    QString formatted = BitcoinUnits::format(unit, amount, is_signed, BitcoinUnits::SeparatorStyle::ALWAYS);
+    if (truncate) {
+        int dotIndex = formatted.indexOf('.');
+        if (dotIndex != -1) {
+            if (*truncate == 0) {
+                formatted = formatted.left(dotIndex);
+            } else if (formatted.length() > dotIndex + 1 + *truncate) {
+                formatted = formatted.left(dotIndex + 1 + *truncate);
+            }
+        }
+    }
+    return formatted + " " + BitcoinUnits::name(unit);
 }
 
 QString HtmlEscape(const QString& str, bool fMultiLine)
 {
-#if QT_VERSION < 0x050000
-    QString escaped = Qt::escape(str);
-#else
     QString escaped = str.toHtmlEscaped();
-#endif
-    escaped = escaped.replace(" ", "&nbsp;");
     if(fMultiLine)
     {
         escaped = escaped.replace("\n", "<br>\n");
@@ -338,7 +419,7 @@ QString HtmlEscape(const std::string& str, bool fMultiLine)
     return HtmlEscape(QString::fromStdString(str), fMultiLine);
 }
 
-void copyEntryData(QAbstractItemView *view, int column, int role)
+void copyEntryData(const QAbstractItemView *view, int column, int role)
 {
     if(!view || !view->selectionModel())
         return;
@@ -351,11 +432,34 @@ void copyEntryData(QAbstractItemView *view, int column, int role)
     }
 }
 
-QList<QModelIndex> getEntryData(QAbstractItemView *view, int column)
+QList<QModelIndex> getEntryData(const QAbstractItemView *view, int column)
 {
     if(!view || !view->selectionModel())
         return QList<QModelIndex>();
     return view->selectionModel()->selectedRows(column);
+}
+
+bool hasEntryData(const QAbstractItemView *view, int column, int role)
+{
+    QModelIndexList selection = getEntryData(view, column);
+    if (selection.isEmpty()) return false;
+    return !selection.at(0).data(role).toString().isEmpty();
+}
+
+QString getDefaultDataDirectory()
+{
+    return PathToQString(GetDefaultDataDir());
+}
+
+QString ExtractFirstSuffixFromFilter(const QString& filter)
+{
+    QRegularExpression filter_re(QStringLiteral(".* \\(\\*\\.(.*)[ \\)]"), QRegularExpression::InvertedGreedinessOption);
+    QString suffix;
+    QRegularExpressionMatch m = filter_re.match(filter);
+    if (m.hasMatch()) {
+        suffix = m.captured(1);
+    }
+    return suffix;
 }
 
 QString getSaveFileName(QWidget *parent, const QString &caption, const QString &dir,
@@ -366,11 +470,7 @@ QString getSaveFileName(QWidget *parent, const QString &caption, const QString &
     QString myDir;
     if(dir.isEmpty()) // Default to user documents location
     {
-#if QT_VERSION < 0x050000
-        myDir = QDesktopServices::storageLocation(QDesktopServices::DocumentsLocation);
-#else
         myDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-#endif
     }
     else
     {
@@ -379,13 +479,7 @@ QString getSaveFileName(QWidget *parent, const QString &caption, const QString &
     /* Directly convert path to native OS path separators */
     QString result = QDir::toNativeSeparators(QFileDialog::getSaveFileName(parent, caption, myDir, filter, &selectedFilter));
 
-    /* Extract first suffix from filter pattern "Description (*.foo)" or "Description (*.foo *.bar ...) */
-    QRegExp filter_re(".* \\(\\*\\.(.*)[ \\)]");
-    QString selectedSuffix;
-    if(filter_re.exactMatch(selectedFilter))
-    {
-        selectedSuffix = filter_re.cap(1);
-    }
+    QString selectedSuffix = ExtractFirstSuffixFromFilter(selectedFilter);
 
     /* Add suffix if needed */
     QFileInfo info(result);
@@ -416,11 +510,7 @@ QString getOpenFileName(QWidget *parent, const QString &caption, const QString &
     QString myDir;
     if(dir.isEmpty()) // Default to user documents location
     {
-#if QT_VERSION < 0x050000
-        myDir = QDesktopServices::storageLocation(QDesktopServices::DocumentsLocation);
-#else
         myDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-#endif
     }
     else
     {
@@ -431,14 +521,8 @@ QString getOpenFileName(QWidget *parent, const QString &caption, const QString &
 
     if(selectedSuffixOut)
     {
-        /* Extract first suffix from filter pattern "Description (*.foo)" or "Description (*.foo *.bar ...) */
-        QRegExp filter_re(".* \\(\\*\\.(.*)[ \\)]");
-        QString selectedSuffix;
-        if(filter_re.exactMatch(selectedFilter))
-        {
-            selectedSuffix = filter_re.cap(1);
-        }
-        *selectedSuffixOut = selectedSuffix;
+        *selectedSuffixOut = ExtractFirstSuffixFromFilter(selectedFilter);
+        ;
     }
     return result;
 }
@@ -459,7 +543,7 @@ bool checkPoint(const QPoint &p, const QWidget *w)
 {
     QWidget *atW = QApplication::widgetAt(w->mapToGlobal(p));
     if (!atW) return false;
-    return atW->topLevelWidget() == w;
+    return atW->window() == w;
 }
 
 bool isObscured(QWidget *w)
@@ -471,67 +555,72 @@ bool isObscured(QWidget *w)
         && checkPoint(QPoint(w->width() / 2, w->height() / 2), w));
 }
 
+void bringToFront(QWidget* w)
+{
+    if (w) {
+        if (QGuiApplication::platformName() == "wayland") {
+            auto flags = w->windowFlags();
+            w->setWindowFlags(flags|Qt::WindowStaysOnTopHint);
+            w->show();
+            w->setWindowFlags(flags);
+            w->show();
+        } else {
+#ifdef Q_OS_MACOS
+            ForceActivation();
+#endif
+            // activateWindow() (sometimes) helps with keyboard focus on Windows
+            if (w->isMinimized()) {
+                w->showNormal();
+            } else {
+                w->show();
+            }
+            w->activateWindow();
+            w->raise();
+        }
+    }
+}
+
+void handleCloseWindowShortcut(QWidget* w)
+{
+    QObject::connect(new QShortcut(QKeySequence(QObject::tr("Ctrl+W")), w), &QShortcut::activated, w, &QWidget::close);
+}
+
 void openDebugLogfile()
 {
-    fs::path pathDebug = GetDataDir() / "debug.log";
+    fs::path pathDebug = gArgs.GetDataDirNet() / "debug.log";
 
     /* Open debug.log with the associated application */
     if (fs::exists(pathDebug))
-        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathDebug)));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(PathToQString(pathDebug)));
 }
 
 void openConfigfile()
 {
-    fs::path pathConfig = GetConfigFile(gArgs.GetArg("-conf", BITCOIN_CONF_FILENAME));
+    fs::path pathConfig = gArgs.GetConfigFilePath();
+
+    /* Create the file */
+    std::ofstream configFile{pathConfig, std::ios_base::app};
+    configFile.close();
 
     /* Open dash.conf with the associated application */
-    if (fs::exists(pathConfig))
-        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathConfig)));
+    if (fs::exists(pathConfig)) {
+        // Workaround for macOS-specific behavior; see #15409.
+        if (!QDesktopServices::openUrl(QUrl::fromLocalFile(PathToQString(pathConfig)))) {
+#ifdef Q_OS_MACOS
+            QProcess::startDetached("/usr/bin/open", QStringList{"-t", PathToQString(pathConfig)});
+#endif
+            return;
+        }
+    }
 }
 
 void showBackups()
 {
-    fs::path backupsDir = GetBackupsDir();
+    fs::path backupsDir = gArgs.GetBackupsDirPath();
 
     /* Open folder with default browser */
     if (fs::exists(backupsDir))
-        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(backupsDir)));
-}
-
-void SubstituteFonts(const QString& language)
-{
-#if defined(Q_OS_MAC)
-// Background:
-// OSX's default font changed in 10.9 and Qt is unable to find it with its
-// usual fallback methods when building against the 10.7 sdk or lower.
-// The 10.8 SDK added a function to let it find the correct fallback font.
-// If this fallback is not properly loaded, some characters may fail to
-// render correctly.
-//
-// The same thing happened with 10.10. .Helvetica Neue DeskInterface is now default.
-//
-// Solution: If building with the 10.7 SDK or lower and the user's platform
-// is 10.9 or higher at runtime, substitute the correct font. This needs to
-// happen before the QApplication is created.
-#if defined(MAC_OS_X_VERSION_MAX_ALLOWED) && MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_8
-    if (floor(NSAppKitVersionNumber) > NSAppKitVersionNumber10_8)
-    {
-        if (floor(NSAppKitVersionNumber) <= NSAppKitVersionNumber10_9)
-            /* On a 10.9 - 10.9.x system */
-            QFont::insertSubstitution(".Lucida Grande UI", "Lucida Grande");
-        else
-        {
-            /* 10.10 or later system */
-            if (language == "zh_CN" || language == "zh_TW" || language == "zh_HK") // traditional or simplified Chinese
-              QFont::insertSubstitution(".Helvetica Neue DeskInterface", "Heiti SC");
-            else if (language == "ja") // Japanese
-              QFont::insertSubstitution(".Helvetica Neue DeskInterface", "Songti SC");
-            else
-              QFont::insertSubstitution(".Helvetica Neue DeskInterface", "Lucida Grande");
-        }
-    }
-#endif
-#endif
+        QDesktopServices::openUrl(QUrl::fromLocalFile(PathToQString(backupsDir)));
 }
 
 ToolTipToRichTextFilter::ToolTipToRichTextFilter(int _size_threshold, QObject *parent) :
@@ -562,133 +651,37 @@ bool ToolTipToRichTextFilter::eventFilter(QObject *obj, QEvent *evt)
     return QObject::eventFilter(obj, evt);
 }
 
-void TableViewLastColumnResizingFixer::connectViewHeadersSignals()
+LabelOutOfFocusEventFilter::LabelOutOfFocusEventFilter(QObject* parent)
+    : QObject(parent)
 {
-    connect(tableView->horizontalHeader(), SIGNAL(sectionResized(int,int,int)), this, SLOT(on_sectionResized(int,int,int)));
-    connect(tableView->horizontalHeader(), SIGNAL(geometriesChanged()), this, SLOT(on_geometriesChanged()));
 }
 
-// We need to disconnect these while handling the resize events, otherwise we can enter infinite loops.
-void TableViewLastColumnResizingFixer::disconnectViewHeadersSignals()
+bool LabelOutOfFocusEventFilter::eventFilter(QObject* watched, QEvent* event)
 {
-    disconnect(tableView->horizontalHeader(), SIGNAL(sectionResized(int,int,int)), this, SLOT(on_sectionResized(int,int,int)));
-    disconnect(tableView->horizontalHeader(), SIGNAL(geometriesChanged()), this, SLOT(on_geometriesChanged()));
-}
-
-// Setup the resize mode, handles compatibility for Qt5 and below as the method signatures changed.
-// Refactored here for readability.
-void TableViewLastColumnResizingFixer::setViewHeaderResizeMode(int logicalIndex, QHeaderView::ResizeMode resizeMode)
-{
-#if QT_VERSION < 0x050000
-    tableView->horizontalHeader()->setResizeMode(logicalIndex, resizeMode);
-#else
-    tableView->horizontalHeader()->setSectionResizeMode(logicalIndex, resizeMode);
-#endif
-}
-
-void TableViewLastColumnResizingFixer::resizeColumn(int nColumnIndex, int width)
-{
-    tableView->setColumnWidth(nColumnIndex, width);
-    tableView->horizontalHeader()->resizeSection(nColumnIndex, width);
-}
-
-int TableViewLastColumnResizingFixer::getColumnsWidth()
-{
-    int nColumnsWidthSum = 0;
-    for (int i = 0; i < columnCount; i++)
-    {
-        nColumnsWidthSum += tableView->horizontalHeader()->sectionSize(i);
-    }
-    return nColumnsWidthSum;
-}
-
-int TableViewLastColumnResizingFixer::getAvailableWidthForColumn(int column)
-{
-    int nResult = lastColumnMinimumWidth;
-    int nTableWidth = tableView->horizontalHeader()->width();
-
-    if (nTableWidth > 0)
-    {
-        int nOtherColsWidth = getColumnsWidth() - tableView->horizontalHeader()->sectionSize(column);
-        nResult = std::max(nResult, nTableWidth - nOtherColsWidth);
+    if (event->type() == QEvent::FocusOut) {
+        auto focus_out = static_cast<QFocusEvent*>(event);
+        if (focus_out->reason() != Qt::PopupFocusReason) {
+            auto label = qobject_cast<QLabel*>(watched);
+            if (label) {
+                auto flags = label->textInteractionFlags();
+                label->setTextInteractionFlags(Qt::NoTextInteraction);
+                label->setTextInteractionFlags(flags);
+            }
+        }
     }
 
-    return nResult;
-}
-
-// Make sure we don't make the columns wider than the table's viewport width.
-void TableViewLastColumnResizingFixer::adjustTableColumnsWidth()
-{
-    disconnectViewHeadersSignals();
-    resizeColumn(lastColumnIndex, getAvailableWidthForColumn(lastColumnIndex));
-    connectViewHeadersSignals();
-
-    int nTableWidth = tableView->horizontalHeader()->width();
-    int nColsWidth = getColumnsWidth();
-    if (nColsWidth > nTableWidth)
-    {
-        resizeColumn(secondToLastColumnIndex,getAvailableWidthForColumn(secondToLastColumnIndex));
-    }
-}
-
-// Make column use all the space available, useful during window resizing.
-void TableViewLastColumnResizingFixer::stretchColumnWidth(int column)
-{
-    disconnectViewHeadersSignals();
-    resizeColumn(column, getAvailableWidthForColumn(column));
-    connectViewHeadersSignals();
-}
-
-// When a section is resized this is a slot-proxy for ajustAmountColumnWidth().
-void TableViewLastColumnResizingFixer::on_sectionResized(int logicalIndex, int oldSize, int newSize)
-{
-    adjustTableColumnsWidth();
-    int remainingWidth = getAvailableWidthForColumn(logicalIndex);
-    if (newSize > remainingWidth)
-    {
-       resizeColumn(logicalIndex, remainingWidth);
-    }
-}
-
-// When the table's geometry is ready, we manually perform the stretch of the "Message" column,
-// as the "Stretch" resize mode does not allow for interactive resizing.
-void TableViewLastColumnResizingFixer::on_geometriesChanged()
-{
-    if ((getColumnsWidth() - this->tableView->horizontalHeader()->width()) != 0)
-    {
-        disconnectViewHeadersSignals();
-        resizeColumn(secondToLastColumnIndex, getAvailableWidthForColumn(secondToLastColumnIndex));
-        connectViewHeadersSignals();
-    }
-}
-
-/**
- * Initializes all internal variables and prepares the
- * the resize modes of the last 2 columns of the table and
- */
-TableViewLastColumnResizingFixer::TableViewLastColumnResizingFixer(QTableView* table, int lastColMinimumWidth, int allColsMinimumWidth, QObject *parent) :
-    QObject(parent),
-    tableView(table),
-    lastColumnMinimumWidth(lastColMinimumWidth),
-    allColumnsMinimumWidth(allColsMinimumWidth)
-{
-    columnCount = tableView->horizontalHeader()->count();
-    lastColumnIndex = columnCount - 1;
-    secondToLastColumnIndex = columnCount - 2;
-    tableView->horizontalHeader()->setMinimumSectionSize(allColumnsMinimumWidth);
-    setViewHeaderResizeMode(secondToLastColumnIndex, QHeaderView::Interactive);
-    setViewHeaderResizeMode(lastColumnIndex, QHeaderView::Interactive);
+    return QObject::eventFilter(watched, event);
 }
 
 #ifdef WIN32
 fs::path static StartupShortcutPath()
 {
-    std::string chain = ChainNameFromCommandLine();
+    std::string chain = gArgs.GetChainName();
     if (chain == CBaseChainParams::MAIN)
         return GetSpecialFolderPath(CSIDL_STARTUP) / "Dash Core.lnk";
     if (chain == CBaseChainParams::TESTNET) // Remove this special case when CBaseChainParams::TESTNET = "testnet4"
         return GetSpecialFolderPath(CSIDL_STARTUP) / "Dash Core (testnet).lnk";
-    return GetSpecialFolderPath(CSIDL_STARTUP) / strprintf("Dash Core (%s).lnk", chain);
+    return GetSpecialFolderPath(CSIDL_STARTUP) / fs::u8path(strprintf("Dash Core (%s).lnk", chain));
 }
 
 bool GetStartOnSystemStartup()
@@ -707,40 +700,28 @@ bool SetStartOnSystemStartup(bool fAutoStart)
         CoInitialize(nullptr);
 
         // Get a pointer to the IShellLink interface.
-        IShellLink* psl = nullptr;
+        IShellLinkW* psl = nullptr;
         HRESULT hres = CoCreateInstance(CLSID_ShellLink, nullptr,
-            CLSCTX_INPROC_SERVER, IID_IShellLink,
+            CLSCTX_INPROC_SERVER, IID_IShellLinkW,
             reinterpret_cast<void**>(&psl));
 
         if (SUCCEEDED(hres))
         {
             // Get the current executable path
-            TCHAR pszExePath[MAX_PATH];
-            GetModuleFileName(nullptr, pszExePath, sizeof(pszExePath));
+            WCHAR pszExePath[MAX_PATH];
+            GetModuleFileNameW(nullptr, pszExePath, ARRAYSIZE(pszExePath));
 
             // Start client minimized
             QString strArgs = "-min";
             // Set -testnet /-regtest options
-            strArgs += QString::fromStdString(strprintf(" -testnet=%d -regtest=%d", gArgs.GetBoolArg("-testnet", false), gArgs.GetBoolArg("-regtest", false)));
-
-#ifdef UNICODE
-            boost::scoped_array<TCHAR> args(new TCHAR[strArgs.length() + 1]);
-            // Convert the QString to TCHAR*
-            strArgs.toWCharArray(args.get());
-            // Add missing '\0'-termination to string
-            args[strArgs.length()] = '\0';
-#endif
+            strArgs += QString::fromStdString(strprintf(" -chain=%s", gArgs.GetChainName()));
 
             // Set the path to the shortcut target
             psl->SetPath(pszExePath);
-            PathRemoveFileSpec(pszExePath);
+            PathRemoveFileSpecW(pszExePath);
             psl->SetWorkingDirectory(pszExePath);
             psl->SetShowCmd(SW_SHOWMINNOACTIVE);
-#ifndef UNICODE
-            psl->SetArguments(strArgs.toStdString().c_str());
-#else
-            psl->SetArguments(args.get());
-#endif
+            psl->SetArguments(strArgs.toStdWString().c_str());
 
             // Query IShellLink for the IPersistFile interface for
             // saving the shortcut in persistent storage.
@@ -748,11 +729,8 @@ bool SetStartOnSystemStartup(bool fAutoStart)
             hres = psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf));
             if (SUCCEEDED(hres))
             {
-                WCHAR pwsz[MAX_PATH];
-                // Ensure that the string is ANSI.
-                MultiByteToWideChar(CP_ACP, 0, StartupShortcutPath().string().c_str(), -1, pwsz, MAX_PATH);
                 // Save the link by calling IPersistFile::Save.
-                hres = ppf->Save(pwsz, TRUE);
+                hres = ppf->Save(StartupShortcutPath().wstring().c_str(), TRUE);
                 ppf->Release();
                 psl->Release();
                 CoUninitialize();
@@ -768,7 +746,7 @@ bool SetStartOnSystemStartup(bool fAutoStart)
 #elif defined(Q_OS_LINUX)
 
 // Follow the Desktop Application Autostart Spec:
-// http://standards.freedesktop.org/autostart-spec/autostart-spec-latest.html
+// https://specifications.freedesktop.org/autostart-spec/autostart-spec-latest.html
 
 fs::path static GetAutostartDir()
 {
@@ -781,15 +759,15 @@ fs::path static GetAutostartDir()
 
 fs::path static GetAutostartFilePath()
 {
-    std::string chain = ChainNameFromCommandLine();
+    std::string chain = gArgs.GetChainName();
     if (chain == CBaseChainParams::MAIN)
         return GetAutostartDir() / "dashcore.desktop";
-    return GetAutostartDir() / strprintf("dashcore-%s.lnk", chain);
+    return GetAutostartDir() / fs::u8path(strprintf("dashcore-%s.desktop", chain));
 }
 
 bool GetStartOnSystemStartup()
 {
-    fs::ifstream optionFile(GetAutostartFilePath());
+    std::ifstream optionFile{GetAutostartFilePath()};
     if (!optionFile.good())
         return false;
     // Scan through file for "Hidden=true":
@@ -813,16 +791,18 @@ bool SetStartOnSystemStartup(bool fAutoStart)
     else
     {
         char pszExePath[MAX_PATH+1];
-        memset(pszExePath, 0, sizeof(pszExePath));
-        if (readlink("/proc/self/exe", pszExePath, sizeof(pszExePath)-1) == -1)
+        ssize_t r = readlink("/proc/self/exe", pszExePath, sizeof(pszExePath));
+        if (r == -1 || r > MAX_PATH) {
             return false;
+        }
+        pszExePath[r] = '\0';
 
         fs::create_directories(GetAutostartDir());
 
-        fs::ofstream optionFile(GetAutostartFilePath(), std::ios_base::out|std::ios_base::trunc);
+        std::ofstream optionFile{GetAutostartFilePath(), std::ios_base::out | std::ios_base::trunc};
         if (!optionFile.good())
             return false;
-        std::string chain = ChainNameFromCommandLine();
+        std::string chain = gArgs.GetChainName();
         // Write a dashcore.desktop file to the autostart directory:
         optionFile << "[Desktop Entry]\n";
         optionFile << "Type=Application\n";
@@ -830,7 +810,7 @@ bool SetStartOnSystemStartup(bool fAutoStart)
             optionFile << "Name=Dash Core\n";
         else
             optionFile << strprintf("Name=Dash Core (%s)\n", chain);
-        optionFile << "Exec=" << pszExePath << strprintf(" -min -testnet=%d -regtest=%d\n", gArgs.GetBoolArg("-testnet", false), gArgs.GetBoolArg("-regtest", false));
+        optionFile << "Exec=" << pszExePath << strprintf(" -min -chain=%s\n", chain);
         optionFile << "Terminal=false\n";
         optionFile << "Hidden=false\n";
         optionFile.close();
@@ -838,73 +818,6 @@ bool SetStartOnSystemStartup(bool fAutoStart)
     return true;
 }
 
-
-#elif defined(Q_OS_MAC)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-// based on: https://github.com/Mozketo/LaunchAtLoginController/blob/master/LaunchAtLoginController.m
-
-#include <CoreFoundation/CoreFoundation.h>
-#include <CoreServices/CoreServices.h>
-
-LSSharedFileListItemRef findStartupItemInList(LSSharedFileListRef list, CFURLRef findUrl);
-LSSharedFileListItemRef findStartupItemInList(LSSharedFileListRef list, CFURLRef findUrl)
-{
-    // loop through the list of startup items and try to find the Dash Core app
-    CFArrayRef listSnapshot = LSSharedFileListCopySnapshot(list, nullptr);
-    for(int i = 0; i < CFArrayGetCount(listSnapshot); i++) {
-        LSSharedFileListItemRef item = (LSSharedFileListItemRef)CFArrayGetValueAtIndex(listSnapshot, i);
-        UInt32 resolutionFlags = kLSSharedFileListNoUserInteraction | kLSSharedFileListDoNotMountVolumes;
-        CFURLRef currentItemURL = nullptr;
-
-#if defined(MAC_OS_X_VERSION_MAX_ALLOWED) && MAC_OS_X_VERSION_MAX_ALLOWED >= 10100
-    if(&LSSharedFileListItemCopyResolvedURL)
-        currentItemURL = LSSharedFileListItemCopyResolvedURL(item, resolutionFlags, nullptr);
-#if defined(MAC_OS_X_VERSION_MIN_REQUIRED) && MAC_OS_X_VERSION_MIN_REQUIRED < 10100
-    else
-        LSSharedFileListItemResolve(item, resolutionFlags, &currentItemURL, nullptr);
-#endif
-#else
-    LSSharedFileListItemResolve(item, resolutionFlags, &currentItemURL, nullptr);
-#endif
-
-        if(currentItemURL && CFEqual(currentItemURL, findUrl)) {
-            // found
-            CFRelease(currentItemURL);
-            return item;
-        }
-        if(currentItemURL) {
-            CFRelease(currentItemURL);
-        }
-    }
-    return nullptr;
-}
-
-bool GetStartOnSystemStartup()
-{
-    CFURLRef bitcoinAppUrl = CFBundleCopyBundleURL(CFBundleGetMainBundle());
-    LSSharedFileListRef loginItems = LSSharedFileListCreate(nullptr, kLSSharedFileListSessionLoginItems, nullptr);
-    LSSharedFileListItemRef foundItem = findStartupItemInList(loginItems, bitcoinAppUrl);
-    return !!foundItem; // return boolified object
-}
-
-bool SetStartOnSystemStartup(bool fAutoStart)
-{
-    CFURLRef bitcoinAppUrl = CFBundleCopyBundleURL(CFBundleGetMainBundle());
-    LSSharedFileListRef loginItems = LSSharedFileListCreate(nullptr, kLSSharedFileListSessionLoginItems, nullptr);
-    LSSharedFileListItemRef foundItem = findStartupItemInList(loginItems, bitcoinAppUrl);
-
-    if(fAutoStart && !foundItem) {
-        // add Dash Core app to startup item list
-        LSSharedFileListInsertItemURL(loginItems, kLSSharedFileListItemBeforeFirst, nullptr, nullptr, bitcoinAppUrl, nullptr, nullptr);
-    }
-    else if(!fAutoStart && foundItem) {
-        // remove item
-        LSSharedFileListItemRemove(loginItems, foundItem);
-    }
-    return true;
-}
-#pragma GCC diagnostic pop
 #else
 
 bool GetStartOnSystemStartup() { return false; }
@@ -912,118 +825,343 @@ bool SetStartOnSystemStartup(bool fAutoStart) { return false; }
 
 #endif
 
-void migrateQtSettings()
+void setStyleSheetDirectory(const QString& path)
 {
-    // Migration (12.1)
-    QSettings settings;
-    if(!settings.value("fMigrationDone121", false).toBool()) {
-        settings.remove("theme");
-        settings.remove("nWindowPos");
-        settings.remove("nWindowSize");
-        settings.setValue("fMigrationDone121", true);
+    stylesheetDirectory = path;
+}
+
+bool isStyleSheetDirectoryCustom()
+{
+    return stylesheetDirectory != defaultStylesheetDirectory;
+}
+
+std::vector<QString> listStyleSheets()
+{
+    std::vector<QString> vecStylesheets;
+    vecStylesheets.reserve(mapThemeToStyle.size());
+    for (const auto& it : mapThemeToStyle) {
+        vecStylesheets.push_back(it.second);
+    }
+    return vecStylesheets;
+}
+
+std::vector<QString> listThemes()
+{
+    std::vector<QString> vecThemes;
+    for (const auto& it : mapThemeToStyle) {
+        if (it.first == generalTheme) continue;
+        vecThemes.push_back(it.first);
+    }
+    return vecThemes;
+}
+
+QString getDefaultTheme()
+{
+    return defaultTheme;
+}
+
+bool isValidTheme(const QString& strTheme)
+{
+    return strTheme == defaultTheme || strTheme == darkThemePrefix || strTheme == traditionalTheme;
+}
+
+void loadStyleSheet(bool fForceUpdate)
+{
+    AssertLockNotHeld(cs_css);
+    LOCK(cs_css);
+
+    static std::unique_ptr<QString> stylesheet;
+
+    bool fDebugCustomStyleSheets = gArgs.GetBoolArg("-debug-ui", false) && isStyleSheetDirectoryCustom();
+    bool fStyleSheetChanged = false;
+
+    if (stylesheet == nullptr || fForceUpdate || fDebugCustomStyleSheets) {
+        auto hasModified = [](const std::vector<QString>& vecFiles) -> bool {
+            static std::map<const QString, QDateTime> mapLastModified;
+
+            bool fModified = false;
+            for (auto file = vecFiles.begin(); file != vecFiles.end() && !fModified; ++file) {
+                QFileInfo info(*file);
+                QDateTime lastModified = info.lastModified(), prevLastModified;
+                auto it = mapLastModified.emplace(*file, lastModified);
+                prevLastModified = it.second ? QDateTime() : it.first->second;
+                it.first->second = lastModified;
+                fModified = prevLastModified != lastModified;
+            }
+            return fModified;
+        };
+
+        auto loadFiles = [&](const std::vector<QString>& vecFiles) -> bool {
+            if (!fForceUpdate && fDebugCustomStyleSheets && !hasModified(vecFiles)) {
+                return false;
+            }
+
+            std::string platformName = gArgs.GetArg("-uiplatform", defaultUIPlatform());
+            stylesheet = std::make_unique<QString>();
+
+            for (const auto& file : vecFiles) {
+                QFile qFile(file);
+                if (!qFile.open(QFile::ReadOnly)) {
+                    throw std::runtime_error(strprintf("%s: Failed to open file: %s", __func__, file.toStdString()));
+                }
+
+                QString strStyle = QLatin1String(qFile.readAll());
+                // Process all <os=...></os> groups in the stylesheet first
+                QRegularExpression osStyleExp(
+                        "^"
+                        "(<os=(?:'|\").+(?:'|\")>)" // group 1
+                        "((?:.|\n)+?)"              // group 2
+                        "(</os>?)"                  // group 3
+                        "$");
+                osStyleExp.setPatternOptions(QRegularExpression::MultilineOption);
+
+                // Collect matches first to avoid modifying the string while iterating
+                QList<QRegularExpressionMatch> matches;
+                {
+                    QRegularExpressionMatchIterator it = osStyleExp.globalMatch(strStyle);
+                    while (it.hasNext()) {
+                        QRegularExpressionMatch m = it.next();
+                        if (m.hasMatch()) {
+                            matches.append(m);
+                        }
+                    }
+                }
+
+                // Build replacement operations using absolute positions
+                struct Replacement { int start; int end; QString replacement; };
+                QVector<Replacement> replacements;
+                for (const auto& m : matches) {
+                    const QString openTag = m.captured(1);
+                    const QString inner = m.captured(2);
+                    Q_UNUSED(inner);
+                    // Remove entire block if OS doesn't match, otherwise drop only the tags
+                    if (!openTag.contains(QString::fromStdString(platformName))) {
+                        replacements.push_back({m.capturedStart(0), m.capturedEnd(0), QString()});
+                    } else {
+                        // Remove opening and closing tags, keep inner content
+                        replacements.push_back({m.capturedStart(1), m.capturedEnd(1), QString()});
+                        replacements.push_back({m.capturedStart(3), m.capturedEnd(3), QString()});
+                    }
+                }
+
+                // Apply replacements from end to start so offsets stay valid
+                std::sort(replacements.begin(), replacements.end(), [](const Replacement& a, const Replacement& b) {
+                    return a.start > b.start;
+                });
+                for (const auto& r : replacements) {
+                    strStyle.replace(r.start, r.end - r.start, r.replacement);
+                }
+
+                stylesheet->append(strStyle);
+            }
+            return true;
+        };
+
+        auto pathToFile = [&](const QString& theme) -> QString {
+            return stylesheetDirectory + "/" + (isStyleSheetDirectoryCustom() ? mapThemeToStyle.at(theme) : theme);
+        };
+
+        std::vector<QString> vecFiles;
+        // If light/dark theme is used load general styles first
+        if (dashThemeActive()) {
+            vecFiles.push_back(pathToFile(generalTheme));
+        }
+        vecFiles.push_back(pathToFile(getActiveTheme()));
+
+        fStyleSheetChanged = loadFiles(vecFiles);
+    }
+
+    bool fUpdateStyleSheet = fForceUpdate || (fDebugCustomStyleSheets && fStyleSheetChanged);
+
+    if (fUpdateStyleSheet && stylesheet != nullptr) {
+        qApp->setStyleSheet(*stylesheet);
     }
 }
 
-// Open CSS when configured
-QString loadStyleSheet()
+QString getActiveTheme()
 {
     QSettings settings;
-    QString theme = settings.value("theme", "").toString();
-
-    QDir themes(":themes");
-    // Make sure settings are pointing to an existent theme
-    if (theme.isEmpty() || !themes.exists(theme)) {
-        theme = defaultTheme;
-        settings.setValue("theme", theme);
+    QString theme = settings.value("theme", defaultTheme).toString();
+    if (!isValidTheme(theme)) {
+        return defaultTheme;
     }
+    return theme;
+}
 
-    QFile qFile(":themes/" + theme);
-    if (qFile.open(QFile::ReadOnly)) {
-        return QLatin1String(qFile.readAll());
+bool dashThemeActive()
+{
+    QSettings settings;
+    QString theme = settings.value("theme", defaultTheme).toString();
+    return theme != traditionalTheme;
+}
+
+void loadTheme(bool fForce)
+{
+    loadStyleSheet(fForce);
+    updateFonts();
+    updateMacFocusRects();
+}
+
+void disableMacFocusRect(const QWidget* w)
+{
+#ifdef Q_OS_MACOS
+    for (const auto& c : w->findChildren<QWidget*>()) {
+        if (c->testAttribute(Qt::WA_MacShowFocusRect)) {
+            c->setAttribute(Qt::WA_MacShowFocusRect, !dashThemeActive());
+            setRectsDisabled.emplace(c);
+        }
     }
+#endif
+}
 
-    return QString();
+void updateMacFocusRects()
+{
+#ifdef Q_OS_MACOS
+    QWidgetList allWidgets = QApplication::allWidgets();
+    auto it = setRectsDisabled.begin();
+    while (it != setRectsDisabled.end()) {
+        if (allWidgets.contains(*it)) {
+            (*it)->setAttribute(Qt::WA_MacShowFocusRect, !dashThemeActive());
+            ++it;
+        } else {
+            it = setRectsDisabled.erase(it);
+        }
+    }
+#endif
+}
+
+void updateButtonGroupShortcuts(QButtonGroup* buttonGroup)
+{
+    if (buttonGroup == nullptr) {
+        return;
+    }
+#ifdef Q_OS_MACOS
+    auto modifier = "Ctrl";
+#else
+    auto modifier = "Alt";
+#endif
+    int nKey = 1;
+    for (auto button : buttonGroup->buttons()) {
+        if (button->isVisible()) {
+            button->setShortcut(QKeySequence(QString("%1+%2").arg(modifier).arg(nKey++)));
+        } else {
+            button->setShortcut(QKeySequence());
+        }
+    }
 }
 
 void setClipboard(const QString& str)
 {
-    QApplication::clipboard()->setText(str, QClipboard::Clipboard);
-    QApplication::clipboard()->setText(str, QClipboard::Selection);
+    QClipboard* clipboard = QApplication::clipboard();
+    clipboard->setText(str, QClipboard::Clipboard);
+    if (clipboard->supportsSelection()) {
+        clipboard->setText(str, QClipboard::Selection);
+    }
 }
 
-fs::path qstringToBoostPath(const QString &path)
+fs::path QStringToPath(const QString &path)
 {
-    return fs::path(path.toStdString(), utf8);
+    return fs::u8path(path.toStdString());
 }
 
-QString boostPathToQString(const fs::path &path)
+QString PathToQString(const fs::path &path)
 {
-    return QString::fromStdString(path.string(utf8));
+    return QString::fromStdString(path.utf8string());
 }
 
-QString formatDurationStr(int secs)
+QString NetworkToQString(Network net)
 {
-    QStringList strList;
-    int days = secs / 86400;
-    int hours = (secs % 86400) / 3600;
-    int mins = (secs % 3600) / 60;
-    int seconds = secs % 60;
+    switch (net) {
+    case NET_UNROUTABLE: return QObject::tr("Unroutable");
+    case NET_IPV4: return "IPv4";
+    case NET_IPV6: return "IPv6";
+    case NET_ONION: return "Onion";
+    case NET_I2P: return "I2P";
+    case NET_CJDNS: return "CJDNS";
+    case NET_INTERNAL: return QObject::tr("Internal");
+    case NET_MAX: assert(false);
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
 
-    if (days)
-        strList.append(QString(QObject::tr("%1 d")).arg(days));
-    if (hours)
-        strList.append(QString(QObject::tr("%1 h")).arg(hours));
-    if (mins)
-        strList.append(QString(QObject::tr("%1 m")).arg(mins));
-    if (seconds || (!days && !hours && !mins))
-        strList.append(QString(QObject::tr("%1 s")).arg(seconds));
+QString ConnectionTypeToQString(ConnectionType conn_type, bool prepend_direction)
+{
+    QString prefix;
+    if (prepend_direction) {
+        prefix = (conn_type == ConnectionType::INBOUND) ?
+                     /*: An inbound connection from a peer. An inbound connection
+                         is a connection initiated by a peer. */
+                     QObject::tr("Inbound") :
+                     /*: An outbound connection to a peer. An outbound connection
+                         is a connection initiated by us. */
+                     QObject::tr("Outbound") + " ";
+    }
+    switch (conn_type) {
+    case ConnectionType::INBOUND: return prefix;
+    //: Peer connection type that relays all network information.
+    case ConnectionType::OUTBOUND_FULL_RELAY: return prefix + QObject::tr("Full Relay");
+    /*: Peer connection type that relays network information about
+        blocks and not transactions or addresses. */
+    case ConnectionType::BLOCK_RELAY: return prefix + QObject::tr("Block Relay");
+    //: Peer connection type established manually through one of several methods.
+    case ConnectionType::MANUAL: return prefix + QObject::tr("Manual");
+    //: Short-lived peer connection type that tests the aliveness of known addresses.
+    case ConnectionType::FEELER: return prefix + QObject::tr("Feeler");
+    //: Short-lived peer connection type that solicits known addresses from a peer.
+    case ConnectionType::ADDR_FETCH: return prefix + QObject::tr("Address Fetch");
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
 
-    return strList.join(" ");
+QString formatDurationStr(std::chrono::seconds dur)
+{
+    const auto d{std::chrono::duration_cast<std::chrono::days>(dur)};
+    const auto h{std::chrono::duration_cast<std::chrono::hours>(dur - d)};
+    const auto m{std::chrono::duration_cast<std::chrono::minutes>(dur - d - h)};
+    const auto s{std::chrono::duration_cast<std::chrono::seconds>(dur - d - h - m)};
+    QStringList str_list;
+    if (auto d2{d.count()}) str_list.append(QObject::tr("%1 d").arg(d2));
+    if (auto h2{h.count()}) str_list.append(QObject::tr("%1 h").arg(h2));
+    if (auto m2{m.count()}) str_list.append(QObject::tr("%1 m").arg(m2));
+    const auto s2{s.count()};
+    if (s2 || str_list.empty()) str_list.append(QObject::tr("%1 s").arg(s2));
+    return str_list.join(" ");
+}
+
+QString FormatPeerAge(std::chrono::seconds time_connected)
+{
+    const auto time_now{GetTime<std::chrono::seconds>()};
+    const auto age{time_now - time_connected};
+    if (age >= 24h) return QObject::tr("%1 d").arg(age / 24h);
+    if (age >= 1h) return QObject::tr("%1 h").arg(age / 1h);
+    if (age >= 1min) return QObject::tr("%1 m").arg(age / 1min);
+    return QObject::tr("%1 s").arg(age / 1s);
 }
 
 QString formatServicesStr(quint64 mask)
 {
     QStringList strList;
 
-    // Just scan the last 8 bits for now.
-    for (int i = 0; i < 8; i++) {
-        uint64_t check = 1 << i;
-        if (mask & check)
-        {
-            switch (check)
-            {
-            case NODE_NETWORK:
-                strList.append("NETWORK");
-                break;
-            case NODE_GETUTXO:
-                strList.append("GETUTXO");
-                break;
-            case NODE_BLOOM:
-                strList.append("BLOOM");
-                break;
-            case NODE_XTHIN:
-                strList.append("XTHIN");
-                break;
-            default:
-                strList.append(QString("%1[%2]").arg("UNKNOWN").arg(check));
-            }
-        }
+    for (const auto& flag : serviceFlagsToStr(mask)) {
+        strList.append(QString::fromStdString(flag));
     }
 
     if (strList.size())
-        return strList.join(" & ");
+        return strList.join(", ");
     else
         return QObject::tr("None");
 }
 
-QString formatPingTime(double dPingTime)
+QString formatPingTime(std::chrono::microseconds ping_time)
 {
-    return (dPingTime == std::numeric_limits<int64_t>::max()/1e6 || dPingTime == 0) ? QObject::tr("N/A") : QString(QObject::tr("%1 ms")).arg(QString::number((int)(dPingTime * 1000), 10));
+    return (ping_time == std::chrono::microseconds::max() || ping_time == 0us) ?
+        QObject::tr("N/A") :
+        QObject::tr("%1 ms").arg(QString::number((int)(count_microseconds(ping_time) / 1000), 10));
 }
 
 QString formatTimeOffset(int64_t nTimeOffset)
 {
-  return QString(QObject::tr("%1 s")).arg(QString::number((int)nTimeOffset, 10));
+  return QObject::tr("%1 s").arg(QString::number((int)nTimeOffset, 10));
 }
 
 QString formatNiceTimeOffset(qint64 secs)
@@ -1063,14 +1201,171 @@ QString formatNiceTimeOffset(qint64 secs)
     return timeBehindText;
 }
 
+QString formatBlockDuration(int blocks, int64_t spacing_seconds)
+{
+    if (blocks <= 0) return QObject::tr("now");
+    const double secs = static_cast<double>(blocks) * static_cast<double>(spacing_seconds);
+    constexpr double MINUTE{60.0}, HOUR{3600.0}, DAY{86400.0}, MONTH{30.44 * 86400.0}, YEAR{365.25 * 86400.0};
+    if (secs < HOUR)  return QObject::tr("%n minute(s)", "", static_cast<int>(secs / MINUTE + 0.5));
+    if (secs < DAY)   return QObject::tr("%n hour(s)",   "", static_cast<int>(secs / HOUR + 0.5));
+    if (secs < MONTH) return QObject::tr("%n day(s)",    "", static_cast<int>(secs / DAY + 0.5));
+    if (secs < YEAR)  return QObject::tr("%n month(s)",  "", static_cast<int>(secs / MONTH + 0.5));
+    return QObject::tr("%n year(s)", "", static_cast<int>(secs / YEAR + 0.5));
+}
+
+QString formatBytes(uint64_t bytes)
+{
+    if (bytes < 1'000)
+        return QObject::tr("%1 B").arg(bytes);
+    if (bytes < 1'000'000)
+        return QObject::tr("%1 kB").arg(bytes / 1'000);
+    if (bytes < 1'000'000'000)
+        return QObject::tr("%1 MB").arg(bytes / 1'000'000);
+
+    return QObject::tr("%1 GB").arg(bytes / 1'000'000'000);
+}
+
+qreal calculateIdealFontSize(int width, const QString& text, QFont font, qreal minPointSize, qreal font_size) {
+    while(font_size >= minPointSize) {
+        font.setPointSizeF(font_size);
+        QFontMetrics fm(font);
+        if (TextWidth(fm, text) < width) {
+            break;
+        }
+        font_size -= 0.5;
+    }
+    return font_size;
+}
+
 void ClickableLabel::mouseReleaseEvent(QMouseEvent *event)
 {
     Q_EMIT clicked(event->pos());
 }
-    
+
 void ClickableProgressBar::mouseReleaseEvent(QMouseEvent *event)
 {
     Q_EMIT clicked(event->pos());
+}
+
+bool ItemDelegate::eventFilter(QObject *object, QEvent *event)
+{
+    if (event->type() == QEvent::KeyPress) {
+        if (static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+            Q_EMIT keyEscapePressed();
+        }
+    }
+    return QItemDelegate::eventFilter(object, event);
+}
+
+void PolishProgressDialog(QProgressDialog* dialog)
+{
+#ifdef Q_OS_MACOS
+    // Workaround for macOS-only Qt bug; see: QTBUG-65750, QTBUG-70357.
+    const int margin = TextWidth(dialog->fontMetrics(), ("X"));
+    dialog->resize(dialog->width() + 2 * margin, dialog->height());
+#endif
+    // QProgressDialog estimates the time the operation will take (based on time
+    // for steps), and only shows itself if that estimate is beyond minimumDuration.
+    // The default minimumDuration value is 4 seconds, and it could make users
+    // think that the GUI is frozen.
+    dialog->setMinimumDuration(0);
+}
+
+int TextWidth(const QFontMetrics& fm, const QString& text)
+{
+    return fm.horizontalAdvance(text);
+}
+
+void LogQtInfo()
+{
+#ifdef QT_STATIC
+    const std::string qt_link{"static"};
+#else
+    const std::string qt_link{"dynamic"};
+#endif
+    // TODO replace instances of LogPrintf with LogInfo once 28318 is merged
+    LogPrintf("Qt %s (%s), plugin=%s\n", qVersion(), qt_link, QGuiApplication::platformName().toStdString());
+    const auto static_plugins = QPluginLoader::staticPlugins();
+    if (static_plugins.empty()) {
+        LogPrintf("No static plugins.\n");
+    } else {
+        LogPrintf("Static plugins:\n");
+        for (const QStaticPlugin& p : static_plugins) {
+            QJsonObject meta_data = p.metaData();
+            const std::string plugin_class = meta_data.take(QString("className")).toString().toStdString();
+            const int plugin_version = meta_data.take(QString("version")).toInt();
+            LogPrintf(" %s, version %d\n", plugin_class, plugin_version);
+        }
+    }
+
+    LogPrintf("Style: %s / %s\n", QApplication::style()->objectName().toStdString(), QApplication::style()->metaObject()->className());
+    LogPrintf("System: %s, %s\n", QSysInfo::prettyProductName().toStdString(), QSysInfo::buildAbi().toStdString());
+    for (const QScreen* s : QGuiApplication::screens()) {
+        LogPrintf("Screen: %s %dx%d, pixel ratio=%.1f\n", s->name().toStdString(), s->size().width(), s->size().height(), s->devicePixelRatio());
+    }
+}
+
+void PopupMenu(QMenu* menu, const QPoint& point, QAction* at_action)
+{
+    // The qminimal plugin does not provide window system integration.
+    if (QApplication::platformName() == "minimal") return;
+    menu->popup(point, at_action);
+}
+
+QDateTime StartOfDay(const QDate& date)
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 14, 0))
+    return date.startOfDay();
+#else
+    return QDateTime(date);
+#endif
+}
+
+bool HasPixmap(const QLabel* label)
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 15, 0))
+    return !label->pixmap(Qt::ReturnByValue).isNull();
+#else
+    return label->pixmap() != nullptr;
+#endif
+}
+
+QImage GetImage(const QLabel* label)
+{
+    if (!HasPixmap(label)) {
+        return QImage();
+    }
+
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 15, 0))
+    return label->pixmap(Qt::ReturnByValue).toImage();
+#else
+    return label->pixmap()->toImage();
+#endif
+}
+
+QString MakeHtmlLink(const QString& source, const QString& link)
+{
+    return QString(source).replace(
+        link,
+        QLatin1String("<a href=\"") + link + QLatin1String("\">") + link + QLatin1String("</a>"));
+}
+
+void PrintSlotException(
+    const std::exception* exception,
+    const QObject* sender,
+    const QObject* receiver)
+{
+    std::string description = sender->metaObject()->className();
+    description += "->";
+    description += receiver->metaObject()->className();
+    PrintExceptionContinue(std::make_exception_ptr(exception), description);
+}
+
+void ShowModalDialogAsynchronously(QDialog* dialog)
+{
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::ApplicationModal);
+    dialog->show();
 }
 
 } // namespace GUIUtil

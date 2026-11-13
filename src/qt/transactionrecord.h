@@ -1,79 +1,67 @@
-// Copyright (c) 2011-2014 The Bitcoin Core developers
+// Copyright (c) 2011-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_QT_TRANSACTIONRECORD_H
 #define BITCOIN_QT_TRANSACTIONRECORD_H
 
-#include "amount.h"
-#include "uint256.h"
-#include "base58.h"
+#include <consensus/amount.h>
+#include <key_io.h>
+#include <script/script.h>
+#include <uint256.h>
 
 #include <QList>
 #include <QString>
 
-class CWallet;
-class CWalletTx;
+namespace interfaces {
+class Node;
+class Wallet;
+struct WalletTx;
+struct WalletTxStatus;
+}
 
 /** UI model for transaction status. The transaction status is the part of a transaction that will change over time.
  */
-class TransactionStatus
-{
-public:
-    TransactionStatus():
-        countsForBalance(false), lockedByInstantSend(false), lockedByChainLocks(false), sortKey(""),
-        matures_in(0), status(Offline), depth(0), open_for(0), cur_num_blocks(-1),
-        cachedChainLockHeight(-1), needsUpdate(false)
-    { }
-
+struct TransactionStatus {
     enum Status {
         Confirmed,          /**< Have 6 or more confirmations (normal tx) or fully mature (mined tx) **/
         /// Normal (sent/received) transactions
-        OpenUntilDate,      /**< Transaction not yet final, waiting for date */
-        OpenUntilBlock,     /**< Transaction not yet final, waiting for block */
-        Offline,            /**< Not sent to any other nodes **/
         Unconfirmed,        /**< Not yet mined into a block **/
         Confirming,         /**< Confirmed, but waiting for the recommended number of confirmations **/
         Conflicted,         /**< Conflicts with other transaction or mempool **/
         Abandoned,          /**< Abandoned from the wallet **/
         /// Generated (mined) transactions
         Immature,           /**< Mined but waiting for maturity */
-        MaturesWarning,     /**< Transaction will likely not mature because no nodes have confirmed */
         NotAccepted         /**< Mined but not accepted */
     };
 
     /// Transaction counts towards available balance
-    bool countsForBalance;
+    bool countsForBalance{false};
     /// Transaction was locked via InstantSend
-    bool lockedByInstantSend;
+    bool lockedByInstantSend{false};
     /// Transaction was locked via ChainLocks
-    bool lockedByChainLocks;
+    bool lockedByChainLocks{false};
     /// Sorting key based on status
     std::string sortKey;
-    /// Label
-    QString label;
 
     /** @name Generated (mined) transactions
        @{*/
-    int matures_in;
+    int matures_in{0};
     /**@}*/
 
     /** @name Reported status
        @{*/
-    Status status;
-    qint64 depth;
-    qint64 open_for; /**< Timestamp if status==OpenUntilDate, otherwise number
-                      of additional blocks that need to be mined before
-                      finalization */
+    Status status{Unconfirmed};
+    qint64 depth{0};
     /**@}*/
 
-    /** Current number of blocks (to know whether cached status is still valid) */
-    int cur_num_blocks;
+    /** Current block hash (to know whether cached status is still valid) */
+    uint256 m_cur_block_hash{};
 
     //** Know when to update transaction for chainlocks **/
-    int cachedChainLockHeight;
+    int cachedChainLockHeight{-1};
 
-    bool needsUpdate;
+    bool needsUpdate{false};
 };
 
 /** UI model for a transaction. A core transaction can be represented by multiple UI transactions if it has
@@ -82,6 +70,8 @@ public:
 class TransactionRecord
 {
 public:
+    // Update EXCLUDED_TYPES in TransactionFilterProxy when adding a new type.
+    // Append new types so existing values remain stable as type-filter bit positions.
     enum Type
     {
         Other,
@@ -91,30 +81,43 @@ public:
         RecvWithAddress,
         RecvFromOther,
         SendToSelf,
-        RecvWithPrivateSend,
-        PrivateSendDenominate,
-        PrivateSendCollateralPayment,
-        PrivateSendMakeCollaterals,
-        PrivateSendCreateDenominations,
-        PrivateSend
+        RecvWithCoinJoin,
+        CoinJoinMixing,
+        CoinJoinCollateralPayment,
+        CoinJoinMakeCollaterals,
+        CoinJoinCreateDenominations,
+        CoinJoinSend,
+        PlatformTransfer,
+        DustReceive,
+        DataTransaction,
+        /// ProRegTx that registers a regular or Evo masternode
+        MasternodeRegistration,
+        /// ProUpServTx, ProUpRegTx, or ProUpRevTx for an existing masternode
+        MasternodeUpdate,
+        /// AssetLockTx that moves funds from Core into Platform
+        AssetLock,
     };
 
     /** Number of confirmation recommended for accepting a transaction */
     static const int RecommendedNumConfirmations = 6;
 
-    TransactionRecord():
-            hash(), time(0), type(Other), strAddress(""), debit(0), credit(0), idx(0)
+    /** Check if script is an OP_RETURN data script */
+    static bool IsDataScript(const CScript& script)
     {
-        address = CBitcoinAddress(strAddress);
-        txDest = address.Get();
+        return !script.empty() && script[0] == OP_RETURN;
+    }
+
+    TransactionRecord():
+            hash(), time(0), type(Other), debit(0), credit(0), idx(0)
+    {
+        txDest = DecodeDestination(strAddress);
     }
 
     TransactionRecord(uint256 _hash, qint64 _time):
-            hash(_hash), time(_time), type(Other), strAddress(""), debit(0),
+            hash(_hash), time(_time), type(Other), debit(0),
             credit(0), idx(0)
     {
-        address = CBitcoinAddress(strAddress);
-        txDest = address.Get();
+        txDest = DecodeDestination(strAddress);
     }
 
     TransactionRecord(uint256 _hash, qint64 _time,
@@ -123,14 +126,14 @@ public:
             hash(_hash), time(_time), type(_type), strAddress(_strAddress), debit(_debit), credit(_credit),
             idx(0)
     {
-        address = CBitcoinAddress(strAddress);
-        txDest = address.Get();
+        txDest = DecodeDestination(strAddress);
     }
 
     /** Decompose CWallet transaction to model transaction records.
      */
-    static bool showTransaction(const CWalletTx &wtx);
-    static QList<TransactionRecord> decomposeTransaction(const CWallet *wallet, const CWalletTx &wtx);
+    static bool showTransaction();
+    static QList<TransactionRecord> decomposeTransaction(interfaces::Node& node, interfaces::Wallet& wallet, const interfaces::WalletTx& wtx,
+                                                         bool dustProtectionEnabled = false, CAmount dustThreshold = 0);
 
     /** @name Immutable transaction attributes
       @{*/
@@ -138,7 +141,6 @@ public:
     qint64 time;
     Type type;
     std::string strAddress;
-    CBitcoinAddress address;
     CTxDestination txDest;
 
     CAmount debit;
@@ -154,19 +156,26 @@ public:
     /** Whether the transaction was sent/received with a watch-only address */
     bool involvesWatchAddress;
 
+    /// Label
+    QString label;
+
     /** Return the unique identifier for this transaction (part) */
-    QString getTxID() const;
+    QString getTxHash() const;
 
     /** Return the output index of the subtransaction  */
     int getOutputIndex() const;
 
     /** Update status from core wallet tx.
      */
-    void updateStatus(const CWalletTx &wtx, int chainLockHeight);
+    void updateStatus(const interfaces::WalletTxStatus& wtx, const uint256& block_hash, int numBlocks, int chainLockHeight, int64_t block_time);
 
     /** Return whether a status update is needed.
      */
-    bool statusUpdateNeeded(int chainLockHeight);
+    bool statusUpdateNeeded(const uint256& block_hash, int chainLockHeight) const;
+
+    /** Update label from address book.
+     */
+    void updateLabel(interfaces::Wallet& wallet);
 };
 
 #endif // BITCOIN_QT_TRANSACTIONRECORD_H

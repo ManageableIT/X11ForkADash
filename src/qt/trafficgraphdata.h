@@ -1,5 +1,9 @@
-#ifndef TRAFFICGRAPHDATA_H
-#define TRAFFICGRAPHDATA_H
+// Copyright (c) 2017-2023 The Dash Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#ifndef BITCOIN_QT_TRAFFICGRAPHDATA_H
+#define BITCOIN_QT_TRAFFICGRAPHDATA_H
 
 #include <QHash>
 #include <QQueue>
@@ -61,6 +65,8 @@ public:
     SampleQueue getCurrentRangeQueueWithAverageBandwidth();
     void clear();
     void setLastBytes(quint64 nLastBytesIn, quint64 nLastBytesOut);
+    quint64 getLastBytesIn() { return nLastBytesIn; }
+    quint64 getLastBytesOut() { return nLastBytesOut; }
 
 private:
     static const int DesiredQueueSizes[];
@@ -69,10 +75,10 @@ private:
     SampleQueueMap sampleStash;
 
     GraphRange currentGraphRange;
-    int currentSampleCounter;
+    int currentSampleCounter{0};
 
-    quint64 nLastBytesIn;
-    quint64 nLastBytesOut;
+    quint64 nLastBytesIn{0};
+    quint64 nLastBytesOut{0};
 
     void update(GraphRange range, const TrafficSample &trafficSample);
 
@@ -88,4 +94,4 @@ private:
     TrafficGraphData& operator=(TrafficGraphData const&);
 };
 
-#endif // TRAFFICGRAPHDATA_H
+#endif // BITCOIN_QT_TRAFFICGRAPHDATA_H

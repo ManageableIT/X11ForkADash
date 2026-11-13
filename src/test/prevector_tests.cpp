@@ -1,19 +1,20 @@
-// Copyright (c) 2015 The Bitcoin Core developers
+// Copyright (c) 2015-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <vector>
-#include "prevector.h"
+#include <prevector.h>
+#include <serialize.h>
+#include <streams.h>
 
-#include "reverse_iterator.h"
-#include "serialize.h"
-#include "streams.h"
-
-#include "test/test_dash.h"
+#include <test/util/random.h>
+#include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
 
-BOOST_FIXTURE_TEST_SUITE(PrevectorTests, TestingSetup)
+#include <ranges>
+#include <vector>
+
+BOOST_FIXTURE_TEST_SUITE(prevector_tests, TestingSetup)
 
 template<unsigned int N, typename T>
 class prevector_tester {
@@ -36,7 +37,7 @@ class prevector_tester {
         {
             local_check(a == b);
         }
-    void local_check(bool b) 
+    void local_check(bool b)
     {
         passed &= b;
     }
@@ -57,17 +58,17 @@ class prevector_tester {
         for (const T& v : pre_vector) {
              local_check(v == real_vector[pos++]);
         }
-        for (const T& v : reverse_iterate(pre_vector)) {
-             local_check(v == real_vector[--pos]);
+        for (const T& v : pre_vector | std::views::reverse) {
+            local_check(v == real_vector[--pos]);
         }
         for (const T& v : const_pre_vector) {
              local_check(v == real_vector[pos++]);
         }
-        for (const T& v : reverse_iterate(const_pre_vector)) {
-             local_check(v == real_vector[--pos]);
+        for (const T& v : const_pre_vector | std::views::reverse) {
+            local_check(v == real_vector[--pos]);
         }
-        CDataStream ss1(SER_DISK, 0);
-        CDataStream ss2(SER_DISK, 0);
+        DataStream ss1{};
+        DataStream ss2{};
         ss1 << real_vector;
         ss2 << pre_vector;
         local_check_equal(ss1.size(), ss2.size());
@@ -152,11 +153,11 @@ public:
         pre_vector.assign(n, value);
     }
 
-    Size size() {
+    Size size() const {
         return real_vector.size();
     }
 
-    Size capacity() {
+    Size capacity() const {
         return pre_vector.capacity();
     }
 
@@ -165,7 +166,8 @@ public:
         test();
     }
 
-    void swap() {
+    void swap() noexcept
+    {
         real_vector.swap(real_vector_alt);
         pre_vector.swap(pre_vector_alt);
         test();
@@ -209,8 +211,8 @@ public:
 
     prevector_tester() {
         SeedInsecureRand();
-        rand_seed = insecure_rand_seed;
-        rand_cache = insecure_rand_ctx;
+        rand_seed = InsecureRand256();
+        rand_cache = FastRandomContext(rand_seed);
     }
 };
 
@@ -220,17 +222,17 @@ BOOST_AUTO_TEST_CASE(PrevectorTestInt)
         prevector_tester<8, int> test;
         for (int i = 0; i < 2048; i++) {
             if (InsecureRandBits(2) == 0) {
-                test.insert(InsecureRandRange(test.size() + 1), InsecureRand32());
+                test.insert(InsecureRandRange(test.size() + 1), int(InsecureRand32()));
             }
             if (test.size() > 0 && InsecureRandBits(2) == 1) {
                 test.erase(InsecureRandRange(test.size()));
             }
             if (InsecureRandBits(3) == 2) {
-                int new_size = std::max<int>(0, std::min<int>(30, test.size() + (InsecureRandRange(5)) - 2));
+                int new_size = std::max(0, std::min(30, (int)test.size() + (int)InsecureRandRange(5) - 2));
                 test.resize(new_size);
             }
             if (InsecureRandBits(3) == 3) {
-                test.insert(InsecureRandRange(test.size() + 1), 1 + InsecureRandBool(), InsecureRand32());
+                test.insert(InsecureRandRange(test.size() + 1), 1 + InsecureRandBool(), int(InsecureRand32()));
             }
             if (InsecureRandBits(3) == 4) {
                 int del = std::min<int>(test.size(), 1 + (InsecureRandBool()));
@@ -238,7 +240,7 @@ BOOST_AUTO_TEST_CASE(PrevectorTestInt)
                 test.erase(beg, beg + del);
             }
             if (InsecureRandBits(4) == 5) {
-                test.push_back(InsecureRand32());
+                test.push_back(int(InsecureRand32()));
             }
             if (test.size() > 0 && InsecureRandBits(4) == 6) {
                 test.pop_back();
@@ -247,7 +249,7 @@ BOOST_AUTO_TEST_CASE(PrevectorTestInt)
                 int values[4];
                 int num = 1 + (InsecureRandBits(2));
                 for (int k = 0; k < num; k++) {
-                    values[k] = InsecureRand32();
+                    values[k] = int(InsecureRand32());
                 }
                 test.insert_range(InsecureRandRange(test.size() + 1), values, values + num);
             }
@@ -263,13 +265,13 @@ BOOST_AUTO_TEST_CASE(PrevectorTestInt)
                 test.shrink_to_fit();
             }
             if (test.size() > 0) {
-                test.update(InsecureRandRange(test.size()), InsecureRand32());
+                test.update(InsecureRandRange(test.size()), int(InsecureRand32()));
             }
             if (InsecureRandBits(10) == 11) {
                 test.clear();
             }
             if (InsecureRandBits(9) == 12) {
-                test.assign(InsecureRandBits(5), InsecureRand32());
+                test.assign(InsecureRandBits(5), int(InsecureRand32()));
             }
             if (InsecureRandBits(3) == 3) {
                 test.swap();
@@ -283,8 +285,8 @@ BOOST_AUTO_TEST_CASE(PrevectorTestInt)
             if (InsecureRandBits(5) == 19) {
                 unsigned int num = 1 + (InsecureRandBits(4));
                 std::vector<int> values(num);
-                for (auto &v : values) {
-                    v = InsecureRand32();
+                for (int& v : values) {
+                    v = int(InsecureRand32());
                 }
                 test.resize_uninitialized(values);
             }

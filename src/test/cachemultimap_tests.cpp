@@ -1,26 +1,19 @@
-// Copyright (c) 2014-2019 The Dash Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "cachemultimap.h"
-
-#include "test/test_dash.h"
+#include <cachemultimap.h>
+#include <streams.h>
+#include <version.h>
 
 #include <algorithm>
 #include <iostream>
 
 #include <boost/test/unit_test.hpp>
 
-BOOST_FIXTURE_TEST_SUITE(cachemultimap_tests, BasicTestingSetup)
+BOOST_AUTO_TEST_SUITE(cachemultimap_tests)
 
-void DumpMap(const CacheMultiMap<int,int>& cmmap)
-{
-    const CacheMultiMap<int,int>::list_t& listItems = cmmap.GetItemList();
-    for(CacheMultiMap<int,int>::list_cit it = listItems.begin(); it != listItems.end(); ++it) {
-        const CacheItem<int,int>& item = *it;
-        std::cout << item.key << " : " << item.value << std::endl;
-    }
-}
-
-bool Compare(const CacheMultiMap<int,int>& cmmap1, const CacheMultiMap<int,int>& cmmap2)
+static bool Compare(const CacheMultiMap<int,int>& cmmap1, const CacheMultiMap<int,int>& cmmap2)
 {
     if(cmmap1.GetMaxSize() != cmmap2.GetMaxSize()) {
         std::cout << "Compare returning false: max size mismatch" << std::endl;
@@ -50,7 +43,7 @@ bool Compare(const CacheMultiMap<int,int>& cmmap1, const CacheMultiMap<int,int>&
     return true;
 }
 
-bool CheckExpected(const CacheMultiMap<int,int>& cmmap, int* expected, CacheMultiMap<int,int>::size_type nSize)
+static bool CheckExpected(const CacheMultiMap<int,int>& cmmap, int* expected, CacheMultiMap<int,int>::size_type nSize)
 {
     if(cmmap.GetSize() != nSize) {
         return false;

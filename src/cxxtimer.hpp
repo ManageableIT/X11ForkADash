@@ -46,7 +46,7 @@ public:
      *          If true, the timer is started just after construction.
      *          Otherwise, it will not be automatically started.
      */
-    Timer(bool start = false);
+    explicit Timer(bool start = false);
 
     /**
      * Copy constructor.
@@ -107,7 +107,7 @@ public:
     /**
      * Return the elapsed time.
      *
-     * @param   duration_t
+     * @tparam   duration_t
      *          The duration type used to return the time elapsed. If not
      *          specified, it returns the time as represented by
      *          std::chrono::milliseconds.
@@ -118,20 +118,17 @@ public:
     typename duration_t::rep count() const;
 
 private:
-
-    bool started_;
-    bool paused_;
-    std::chrono::steady_clock::time_point reference_;
-    std::chrono::duration<long double> accumulated_;
+    bool started_{false};
+    bool paused_{false};
+    std::chrono::steady_clock::time_point reference_{std::chrono::steady_clock::now()};
+    std::chrono::duration<long double> accumulated_{std::chrono::duration<long double>(0)};
 };
 
 }
 
 
-inline cxxtimer::Timer::Timer(bool start) :
-        started_(false), paused_(false),
-        reference_(std::chrono::steady_clock::now()),
-        accumulated_(std::chrono::duration<long double>(0)) {
+inline cxxtimer::Timer::Timer(bool start)
+{
     if (start) {
         this->start();
     }

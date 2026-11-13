@@ -1,48 +1,67 @@
-// Copyright (c) 2017-2020 The Dash Core developers
+// Copyright (c) 2017-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef DASH_SIMPLIFIEDMNS_H
-#define DASH_SIMPLIFIEDMNS_H
+#ifndef BITCOIN_EVO_SIMPLIFIEDMNS_H
+#define BITCOIN_EVO_SIMPLIFIEDMNS_H
 
-#include "bls/bls.h"
-#include "merkleblock.h"
-#include "netaddress.h"
-#include "pubkey.h"
-#include "serialize.h"
-#include "version.h"
+#include <bls/bls.h>
+#include <evo/dmn_types.h>
+#include <evo/netinfo.h>
+#include <evo/providertx.h>
+#include <util/helpers.h>
+
+#include <merkleblock.h>
+#include <netaddress.h>
+#include <pubkey.h>
+
+#include <gsl/pointers.h>
+
+#include <memory>
+#include <vector>
+
+struct RPCResult;
 
 class UniValue;
-class CDeterministicMNList;
-class CDeterministicMN;
-
-namespace llmq
-{
-    class CFinalCommitment;
-} // namespace llmq
 
 class CSimplifiedMNListEntry
 {
 public:
     uint256 proRegTxHash;
     uint256 confirmedHash;
-    CService service;
+    std::shared_ptr<NetInfoInterface> netInfo{nullptr};
     CBLSLazyPublicKey pubKeyOperator;
     CKeyID keyIDVoting;
-    bool isValid;
+    bool isValid{false};
+    uint16_t platformHTTPPort{0};
+    uint160 platformNodeID{};
+    CScript scriptPayout; // mem-only
+    MasternodePayoutShares payouts; // mem-only
+    CollateralShares shares; // mem-only
+    CScript scriptOperatorPayout; // mem-only
+    uint16_t nVersion{ProTxVersion::LegacyBLS};
+    MnType nType{MnType::Regular};
 
-public:
-    CSimplifiedMNListEntry() {}
-    CSimplifiedMNListEntry(const CDeterministicMN& dmn);
+    CSimplifiedMNListEntry() = default;
+    CSimplifiedMNListEntry(const uint256& proreg_tx_hash, const uint256& confirmed_hash,
+                           const std::shared_ptr<NetInfoInterface>& net_info, const CBLSLazyPublicKey& pubkey_operator,
+                           const CKeyID& keyid_voting, bool is_valid, uint16_t platform_http_port,
+                           const uint160& platform_node_id, const CScript& script_payout,
+                           const MasternodePayoutShares& payouts, const CollateralShares& shares,
+                           const CScript& script_operator_payout, uint16_t version, MnType type);
 
     bool operator==(const CSimplifiedMNListEntry& rhs) const
     {
         return proRegTxHash == rhs.proRegTxHash &&
                confirmedHash == rhs.confirmedHash &&
-               service == rhs.service &&
+               util::shared_ptr_equal(netInfo, rhs.netInfo) &&
                pubKeyOperator == rhs.pubKeyOperator &&
                keyIDVoting == rhs.keyIDVoting &&
-               isValid == rhs.isValid;
+               isValid == rhs.isValid &&
+               nVersion == rhs.nVersion &&
+               nType == rhs.nType &&
+               platformHTTPPort == rhs.platformHTTPPort &&
+               platformNodeID == rhs.platformNodeID;
     }
 
     bool operator!=(const CSimplifiedMNListEntry& rhs) const
@@ -50,25 +69,42 @@ public:
         return !(rhs == *this);
     }
 
-public:
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
+    SERIALIZE_METHODS(CSimplifiedMNListEntry, obj)
     {
-        READWRITE(proRegTxHash);
-        READWRITE(confirmedHash);
-        READWRITE(service);
-        READWRITE(pubKeyOperator);
-        READWRITE(keyIDVoting);
-        READWRITE(isValid);
+        if ((s.GetType() & SER_NETWORK) && s.GetVersion() >= SMNLE_VERSIONED_PROTO_VERSION) {
+            READWRITE(
+                obj.nVersion);
+        }
+        READWRITE(
+                obj.proRegTxHash,
+                obj.confirmedHash,
+                NetInfoSerWrapper(const_cast<std::shared_ptr<NetInfoInterface>&>(obj.netInfo),
+                                  obj.nVersion >= ProTxVersion::ExtAddr),
+                CBLSLazyPublicKeyVersionWrapper(const_cast<CBLSLazyPublicKey&>(obj.pubKeyOperator), (obj.nVersion == ProTxVersion::LegacyBLS)),
+                obj.keyIDVoting,
+                obj.isValid);
+        if ((s.GetType() & SER_NETWORK) && s.GetVersion() < DMN_TYPE_PROTO_VERSION) {
+            return;
+        }
+        if (obj.nVersion >= ProTxVersion::BasicBLS) {
+            READWRITE(
+                obj.nType);
+            if (obj.nType == MnType::Evo) {
+                if (obj.nVersion < ProTxVersion::ExtAddr) {
+                READWRITE(
+                obj.platformHTTPPort);
+                }
+                READWRITE(
+                obj.platformNodeID);
+            }
+        }
     }
 
-public:
     uint256 CalcHash() const;
 
+    [[nodiscard]] static RPCResult GetJsonHelp(const std::string& key, bool optional);
     std::string ToString() const;
-    void ToJson(UniValue& obj) const;
+    [[nodiscard]] UniValue ToJson(bool extended = false) const;
 };
 
 class CSimplifiedMNList
@@ -76,75 +112,16 @@ class CSimplifiedMNList
 public:
     std::vector<std::unique_ptr<CSimplifiedMNListEntry>> mnList;
 
-public:
-    CSimplifiedMNList() {}
-    CSimplifiedMNList(const std::vector<CSimplifiedMNListEntry>& smlEntries);
-    CSimplifiedMNList(const CDeterministicMNList& dmnList);
+    CSimplifiedMNList() = default;
+
+    // This constructor from std::vector is used in unit-tests
+    explicit CSimplifiedMNList(std::vector<std::unique_ptr<CSimplifiedMNListEntry>>&& smlEntries);
 
     uint256 CalcMerkleRoot(bool* pmutated = nullptr) const;
+    bool operator==(const CSimplifiedMNList& rhs) const;
 };
 
-/// P2P messages
+bool CalcCbTxMerkleRootMNList(uint256& merkleRootRet, gsl::not_null<std::shared_ptr<const CSimplifiedMNList>> sml,
+                              BlockValidationState& state);
 
-class CGetSimplifiedMNListDiff
-{
-public:
-    uint256 baseBlockHash;
-    uint256 blockHash;
-
-public:
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
-    {
-        READWRITE(baseBlockHash);
-        READWRITE(blockHash);
-    }
-};
-
-class CSimplifiedMNListDiff
-{
-public:
-    uint256 baseBlockHash;
-    uint256 blockHash;
-    CPartialMerkleTree cbTxMerkleTree;
-    CTransactionRef cbTx;
-    std::vector<uint256> deletedMNs;
-    std::vector<CSimplifiedMNListEntry> mnList;
-
-    // starting with proto version LLMQS_PROTO_VERSION, we also transfer changes in active quorums
-    std::vector<std::pair<uint8_t, uint256>> deletedQuorums; // p<LLMQType, quorumHash>
-    std::vector<llmq::CFinalCommitment> newQuorums;
-
-public:
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
-    {
-        READWRITE(baseBlockHash);
-        READWRITE(blockHash);
-        READWRITE(cbTxMerkleTree);
-        READWRITE(cbTx);
-        READWRITE(deletedMNs);
-        READWRITE(mnList);
-
-        if (s.GetVersion() >= LLMQS_PROTO_VERSION) {
-            READWRITE(deletedQuorums);
-            READWRITE(newQuorums);
-        }
-    }
-
-public:
-    CSimplifiedMNListDiff();
-    ~CSimplifiedMNListDiff();
-
-    bool BuildQuorumsDiff(const CBlockIndex* baseBlockIndex, const CBlockIndex* blockIndex);
-
-    void ToJson(UniValue& obj) const;
-};
-
-bool BuildSimplifiedMNListDiff(const uint256& baseBlockHash, const uint256& blockHash, CSimplifiedMNListDiff& mnListDiffRet, std::string& errorRet);
-
-#endif //DASH_SIMPLIFIEDMNS_H
+#endif // BITCOIN_EVO_SIMPLIFIEDMNS_H

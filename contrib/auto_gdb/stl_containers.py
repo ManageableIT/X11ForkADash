@@ -1,4 +1,7 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
+# Copyright (c) 2018-2023 The Dash Core developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #
 
 try:
@@ -7,8 +10,8 @@ except ImportError as e:
     raise ImportError("This script must be run in GDB: ", str(e))
 import sys
 import os
-sys.path.append(os.getcwd())
 import common_helpers
+sys.path.append(os.getcwd())
 
 
 def find_type(orig, name):

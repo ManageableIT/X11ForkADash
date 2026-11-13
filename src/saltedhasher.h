@@ -1,12 +1,16 @@
-// Copyright (c) 2019 The Dash Core developers
+// Copyright (c) 2019-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef SALTEDHASHER_H
-#define SALTEDHASHER_H
+#ifndef BITCOIN_SALTEDHASHER_H
+#define BITCOIN_SALTEDHASHER_H
 
-#include "hash.h"
-#include "uint256.h"
+#include <hash.h>
+#include <uint256.h>
+#include <crypto/siphash.h>
+
+#include <unordered_map>
+#include <unordered_set>
 
 /** Helper classes for std::unordered_map and std::unordered_set hashing */
 
@@ -17,7 +21,7 @@ struct SaltedHasherImpl<std::pair<uint256, N>>
 {
     static std::size_t CalcHash(const std::pair<uint256, N>& v, uint64_t k0, uint64_t k1)
     {
-        return SipHashUint256Extra(k0, k1, v.first, (uint32_t) v.second);
+        return SipHashUint256Extra(k0, k1, v.first, static_cast<uint32_t>(v.second));
     }
 };
 
@@ -26,7 +30,16 @@ struct SaltedHasherImpl<std::pair<N, uint256>>
 {
     static std::size_t CalcHash(const std::pair<N, uint256>& v, uint64_t k0, uint64_t k1)
     {
-        return SipHashUint256Extra(k0, k1, v.second, (uint32_t) v.first);
+        return SipHashUint256Extra(k0, k1, v.second, static_cast<uint32_t>(v.first));
+    }
+};
+
+template<>
+struct SaltedHasherImpl<uint64_t>
+{
+    static std::size_t CalcHash(uint64_t v, uint64_t k0, uint64_t k1)
+    {
+        return CSipHasher(k0, k1).Write(v).Finalize();
     }
 };
 
@@ -72,4 +85,16 @@ struct StaticSaltedHasher
     }
 };
 
-#endif//SALTEDHASHER_H
+
+template <typename T>
+using Uint256HashMap = std::unordered_map<uint256, T, StaticSaltedHasher>;
+
+using Uint256HashSet = std::unordered_set<uint256, StaticSaltedHasher>;
+
+
+template <typename Key, typename Value, typename Hasher, size_t MaxSize, size_t TruncateThreshold>
+class unordered_lru_cache;
+template <typename T, size_t MaxSize = 0ul, size_t TruncateThreshold = 0ul>
+using Uint256LruHashMap = unordered_lru_cache<uint256, T, StaticSaltedHasher, MaxSize, TruncateThreshold>;
+
+#endif // BITCOIN_SALTEDHASHER_H

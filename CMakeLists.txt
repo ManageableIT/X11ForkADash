@@ -8,7 +8,7 @@
 cmake_minimum_required(VERSION 3.7)
 project(dash)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 20)
 
 include_directories(
         src
@@ -20,7 +20,18 @@ include_directories(
 if(UNIX AND NOT APPLE)
     set(DEPENDS_PREFIX depends/x86_64-pc-linux-gnu)
 elseif(APPLE)
-    set(DEPENDS_PREFIX depends/x86_64-apple-darwin11)
+    EXECUTE_PROCESS( COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE )
+    EXECUTE_PROCESS( COMMAND system_profiler -detailLevel mini -json SPSoftwareDataType
+            COMMAND jq .SPSoftwareDataType
+            COMMAND jq .[]
+            COMMAND jq .kernel_version
+            COMMAND tr -d "Dawrin\" "
+            OUTPUT_VARIABLE DARWIN_KERNEL_VERSION)
+    if( ${ARCHITECTURE} STREQUAL "arm64" )
+        set(DEPENDS_PREFIX depends/aarch64-apple-darwin${DARWIN_KERNEL_VERSION})
+    else()
+        set(DEPENDS_PREFIX depends/x86_64-apple-darwin${DARWIN_KERNEL_VERSION})
+    endif()
 elseif(WIN32)
     set(DEPENDS_PREFIX depends/x86_64-w64-mingw32)
 endif()
@@ -34,8 +45,11 @@ endif()
 
 add_definitions(
         -DENABLE_CRASH_HOOKS=1
+        -DENABLE_STACKTRACES=1
         -DENABLE_WALLET=1
 )
+
+# find src/ -name '*.h' -or -name '*.cpp' | sed -r 's/[^/]*.(h|cpp)$/*.\1/' | sort | uniq | grep -Ev "/(bench/data|obj)/" > list.txt
 
 file(GLOB SOURCE_FILES
         src/*.cpp
@@ -44,6 +58,8 @@ file(GLOB SOURCE_FILES
         src/bench/*.h
         src/bls/*.cpp
         src/bls/*.h
+        src/coinjoin/*.cpp
+        src/coinjoin/*.h
         src/compat/*.cpp
         src/compat/*.h
         src/consensus/*.cpp
@@ -53,19 +69,26 @@ file(GLOB SOURCE_FILES
         src/crypto/*.h
         src/evo/*.cpp
         src/evo/*.h
+        src/governance/*.cpp
+        src/governance/*.h
+        src/index/*.cpp
+        src/index/*.h
+        src/interfaces/*.cpp
+        src/interfaces/*.h
         src/leveldb/db/*.cc
         src/leveldb/db/*.h
         src/leveldb/include/*.h
         src/llmq/*.cpp
         src/llmq/*.h
+        src/logging/*.h
         src/masternode/*.cpp
         src/masternode/*.h
+        src/node/*.cpp
+        src/node/*.h
         src/policy/*.cpp
         src/policy/*.h
         src/primitives/*.cpp
         src/primitives/*.h
-        src/privatesend/*.cpp
-        src/privatesend/*.h
         src/qt/*.cpp
         src/qt/*.h
         src/qt/test/*.cpp
@@ -75,11 +98,20 @@ file(GLOB SOURCE_FILES
         src/script/*.cpp
         src/script/*.h
         src/secp256k1/include/*.h
+        src/support/allocators/*.h
+        src/support/*.cpp
+        src/support/*.h
         src/test/*.cpp
         src/test/*.h
+        src/test/fuzz/*.cpp
+        src/test/fuzz/*.h
+        src/test/util/*.cpp
+        src/test/util/*.h
         src/univalue/include/*.h
         src/univalue/lib/*.cpp
         src/univalue/lib/*.h
+        src/util/*.h
+        src/util/*.cpp
         src/wallet/*.cpp
         src/wallet/*.h
         src/wallet/test/*.cpp

@@ -3,13 +3,43 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-DIST_SUBDIRS = secp256k1 univalue
+# Pattern rule to print variables, e.g. make print-top_srcdir
+print-%: FORCE
+	@echo '$*'='$($*)'
 
-AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS)
-AM_CXXFLAGS = $(HARDENED_CXXFLAGS) $(ERROR_CXXFLAGS)
-AM_CPPFLAGS = $(HARDENED_CPPFLAGS)
+DIST_SUBDIRS = secp256k1
+
+AM_LDFLAGS = $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) $(SANITIZER_LDFLAGS) $(CORE_LDFLAGS) $(BACKTRACE_LDFLAGS)
+# BACKTRACE_FLAGS must precede the debug-level flags: -g-family members placed
+# there (e.g. a -gdwarf-N version pin) imply -g2, so the intended level
+# (DEBUG_*FLAGS' -g1 floor, --enable-debug's -g3, or the user's CXXFLAGS) must
+# come later to take effect.
+AM_CFLAGS = $(BACKTRACE_FLAGS) $(DEBUG_CFLAGS)
+AM_CXXFLAGS = $(BACKTRACE_FLAGS) $(DEBUG_CXXFLAGS) $(HARDENED_CXXFLAGS) $(WARN_CXXFLAGS) $(NOWARN_CXXFLAGS) $(ERROR_CXXFLAGS) $(SANITIZER_CXXFLAGS) $(CORE_CXXFLAGS)
+AM_OBJCXXFLAGS = $(AM_CXXFLAGS)
+AM_CPPFLAGS = $(DEBUG_CPPFLAGS) $(HARDENED_CPPFLAGS) $(CORE_CPPFLAGS)
+AM_LIBTOOLFLAGS = --preserve-dup-deps
+PTHREAD_FLAGS = $(PTHREAD_CFLAGS) $(PTHREAD_LIBS)
 EXTRA_LIBRARIES =
 
+lib_LTLIBRARIES =
+noinst_LTLIBRARIES =
+
+bin_PROGRAMS =
+noinst_PROGRAMS =
+check_PROGRAMS =
+TESTS =
+BENCHMARKS =
+
+# The first make in dashbls after configure reruns its config.status, which
+# replaces relic_conf.h. Let that finish before compiling anything that
+# includes it.
+BUILT_SOURCES = dashbls/depends/relic/include/relic_conf.h
+
+dashbls/depends/relic/include/relic_conf.h: FORCE
+	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C dashbls depends/relic/include/relic_conf.h
+
+if ENABLE_STACKTRACES
 if ENABLE_CRASH_HOOKS
 if CRASH_HOOKS_WRAPPED_CXX_ABI
 # Wrap internal C++ ABI's so that we can attach stacktraces to exceptions
@@ -18,215 +48,377 @@ if TARGET_WINDOWS
 LDFLAGS_WRAP_EXCEPTIONS += -Wl,-wrap,_assert -Wl,-wrap,_wassert
 else
 LDFLAGS_WRAP_EXCEPTIONS += -Wl,-wrap,__assert_fail
-endif
-endif
-endif
+endif # TARGET_WINDOWS
+endif # CRASH_HOOKS_WRAPPED_CXX_ABI
+endif # ENABLE_CRASH_HOOKS
+endif # ENABLE_STACKTRACES
 
-if TARGET_WINDOWS
-BACKTRACE_LIB = -ldbghelp -lbacktrace
-else
-BACKTRACE_LIB = -lbacktrace
-endif
+BITCOIN_INCLUDES=-I$(builddir) -I$(srcdir)/$(MINISKETCH_INCLUDE_DIR_INT) -I$(srcdir)/secp256k1/include -I$(srcdir)/$(UNIVALUE_INCLUDE_DIR_INT) $(LEVELDB_CPPFLAGS)
+BITCOIN_INCLUDES+=-isystem$(srcdir)/dashbls/include -isystem$(srcdir)/dashbls/depends/relic/include -isystem$(srcdir)/dashbls/depends/minialloc/include
+BITCOIN_INCLUDES+=-isystem$(srcdir)/immer
 
-if EMBEDDED_UNIVALUE
-LIBUNIVALUE = univalue/libunivalue.la
-
-$(LIBUNIVALUE): $(wildcard univalue/lib/*) $(wildcard univalue/include/*)
-	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C $(@D) $(@F)
-else
-LIBUNIVALUE = $(UNIVALUE_LIBS)
-endif
-
-BITCOIN_CONFIG_INCLUDES=-I$(builddir)/config
-BITCOIN_INCLUDES=-I$(builddir) -I$(builddir)/obj $(BDB_CPPFLAGS) $(BOOST_CPPFLAGS) $(LEVELDB_CPPFLAGS) $(CRYPTO_CFLAGS) $(SSL_CFLAGS)
-
-BITCOIN_INCLUDES += -I$(srcdir)/secp256k1/include
-BITCOIN_INCLUDES += $(UNIVALUE_CFLAGS)
-
-BLS_LIBS=-lchiabls -lgmp
-
-LIBBITCOIN_SERVER=libdash_server.a
-LIBBITCOIN_COMMON=libdash_common.a
-LIBBITCOIN_CONSENSUS=libdash_consensus.a
-LIBBITCOIN_CLI=libdash_cli.a
-LIBBITCOIN_UTIL=libdash_util.a
-LIBBITCOIN_CRYPTO_BASE=crypto/libdash_crypto_base.a
-LIBBITCOINQT=qt/libdashqt.a
+LIBBITCOIN_NODE=libbitcoin_node.a
+LIBBITCOIN_COMMON=libbitcoin_common.a
+LIBBITCOIN_CONSENSUS=libbitcoin_consensus.a
+LIBBITCOIN_CLI=libbitcoin_cli.a
+LIBBITCOIN_UTIL=libbitcoin_util.a
+LIBBITCOIN_CRYPTO_BASE=crypto/libbitcoin_crypto_base.la
+LIBBITCOINQT=qt/libbitcoinqt.a
+LIBDASHBLS=dashbls/libdashbls.la
 LIBSECP256K1=secp256k1/libsecp256k1.la
 
 if ENABLE_ZMQ
-LIBBITCOIN_ZMQ=libdash_zmq.a
+LIBBITCOIN_ZMQ=libbitcoin_zmq.a
 endif
 if BUILD_BITCOIN_LIBS
 LIBBITCOINCONSENSUS=libdashconsensus.la
 endif
+if BUILD_BITCOIN_KERNEL_LIB
+LIBBITCOINKERNEL=libdashkernel.la
+endif
 if ENABLE_WALLET
-LIBBITCOIN_WALLET=libdash_wallet.a
+LIBBITCOIN_WALLET=libbitcoin_wallet.a
+LIBBITCOIN_WALLET_TOOL=libbitcoin_wallet_tool.a
 endif
 
-LIBBITCOIN_CRYPTO= $(LIBBITCOIN_CRYPTO_BASE)
+LIBBITCOIN_CRYPTO = $(LIBBITCOIN_CRYPTO_BASE)
+LIBBITCOIN_CRYPTO_SPH = crypto/libbitcoin_crypto_sph.la
+LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_SPH)
+if ENABLE_SSSE3
+LIBBITCOIN_CRYPTO_SSSE3 = crypto/libbitcoin_crypto_ssse3.la
+LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_SSSE3)
+endif
 if ENABLE_SSE41
-LIBBITCOIN_CRYPTO_SSE41 = crypto/libdash_crypto_sse41.a
+LIBBITCOIN_CRYPTO_SSE41 = crypto/libbitcoin_crypto_sse41.la
 LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_SSE41)
+if ENABLE_X86_AESNI
+LIBBITCOIN_CRYPTO_X86_AESNI = crypto/libbitcoin_crypto_x86_aesni.la
+LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_X86_AESNI)
+endif
+if ENABLE_X86_SHANI
+LIBBITCOIN_CRYPTO_X86_SHANI = crypto/libbitcoin_crypto_x86_shani.la
+LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_X86_SHANI)
+endif
 endif
 if ENABLE_AVX2
-LIBBITCOIN_CRYPTO_AVX2 = crypto/libdash_crypto_avx2.a
+LIBBITCOIN_CRYPTO_AVX2 = crypto/libbitcoin_crypto_avx2.la
 LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_AVX2)
 endif
-if ENABLE_SHANI
-LIBBITCOIN_CRYPTO_SHANI = crypto/libdash_crypto_shani.a
-LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_SHANI)
+if ENABLE_ARM_AES
+LIBBITCOIN_CRYPTO_ARM_AES = crypto/libbitcoin_crypto_arm_aes.la
+LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_ARM_AES)
 endif
+if ENABLE_ARM_NEON
+LIBBITCOIN_CRYPTO_ARM_NEON = crypto/libbitcoin_crypto_arm_neon.la
+LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_ARM_NEON)
+endif
+if ENABLE_ARM_SHANI
+LIBBITCOIN_CRYPTO_ARM_SHANI = crypto/libbitcoin_crypto_arm_shani.la
+LIBBITCOIN_CRYPTO += $(LIBBITCOIN_CRYPTO_ARM_SHANI)
+endif
+noinst_LTLIBRARIES += $(LIBBITCOIN_CRYPTO)
 
-$(LIBSECP256K1): $(wildcard secp256k1/src/*) $(wildcard secp256k1/include/*)
+$(LIBDASHBLS):
+	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C $(@D)
+
+$(LIBSECP256K1): $(wildcard secp256k1/src/*.h) $(wildcard secp256k1/src/*.c) $(wildcard secp256k1/include/*)
 	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C $(@D) $(@F)
 
 # Make is not made aware of per-object dependencies to avoid limiting building parallelization
 # But to build the less dependent modules first, we manually select their order here:
 EXTRA_LIBRARIES += \
-  $(LIBBITCOIN_CRYPTO) \
   $(LIBBITCOIN_UTIL) \
   $(LIBBITCOIN_COMMON) \
   $(LIBBITCOIN_CONSENSUS) \
-  $(LIBBITCOIN_SERVER) \
+  $(LIBBITCOIN_NODE) \
   $(LIBBITCOIN_CLI) \
+  $(LIBBITCOIN_IPC) \
   $(LIBBITCOIN_WALLET) \
+  $(LIBBITCOIN_WALLET_TOOL) \
   $(LIBBITCOIN_ZMQ)
-
-lib_LTLIBRARIES = $(LIBBITCOINCONSENSUS)
-
-bin_PROGRAMS =
-noinst_PROGRAMS =
-TESTS =
-BENCHMARKS =
 
 if BUILD_BITCOIND
   bin_PROGRAMS += dashd
 endif
 
-if BUILD_BITCOIN_UTILS
-  bin_PROGRAMS += dash-cli dash-tx
+if BUILD_BITCOIN_NODE
+  bin_PROGRAMS += dash-node
 endif
 
-.PHONY: FORCE check-symbols check-security
+if BUILD_BITCOIN_CLI
+  bin_PROGRAMS += dash-cli
+endif
+
+if BUILD_BITCOIN_TX
+  bin_PROGRAMS += dash-tx
+endif
+
+if ENABLE_WALLET
+if BUILD_BITCOIN_WALLET
+  bin_PROGRAMS += dash-wallet
+endif
+endif
+
+if BUILD_BITCOIN_UTIL
+  bin_PROGRAMS += dash-util
+endif
+
+if BUILD_BITCOIN_CHAINSTATE
+  bin_PROGRAMS += dash-chainstate
+endif
+
+.PHONY: FORCE check-symbols check-security check-stdlib-paths
 # dash core #
 BITCOIN_CORE_H = \
+  active/context.h \
+  active/dkgsession.h \
+  active/dkgsessionhandler.h \
+  active/masternode.h \
   addrdb.h \
-  addressindex.h \
-  spentindex.h \
   addrman.h \
+  addrman_impl.h \
+  attributes.h \
+  banman.h \
   base58.h \
   batchedlogger.h \
-  bip39.h \
-  bip39_english.h \
+  bech32.h \
+  bip324.h \
   blockencodings.h \
-  bloom.h \
+  blockfilter.h \
   cachemap.h \
   cachemultimap.h \
   chain.h \
+  chainlock/chainlock.h \
+  chainlock/clsig.h \
+  chainlock/handler.h \
+  chainlock/signing.h \
   chainparams.h \
   chainparamsbase.h \
   chainparamsseeds.h \
-  checkpoints.h \
   checkqueue.h \
   clientversion.h \
+  coinjoin/client.h \
+  coinjoin/coinjoin.h \
+  coinjoin/common.h \
+  coinjoin/options.h \
+  coinjoin/server.h \
+  coinjoin/util.h \
+  coinjoin/walletman.h \
   coins.h \
-  compat.h \
+  common/bloom.h \
+  common/init.h \
+  common/run_command.h \
+  common/url.h \
+  compat/assumptions.h \
   compat/byteswap.h \
+  compat/compat.h \
+  compat/cpuid.h \
   compat/endian.h \
-  compat/sanity.h \
   compressor.h \
   consensus/consensus.h \
+  consensus/tx_check.h \
   consensus/tx_verify.h \
+  context.h \
   core_io.h \
   core_memusage.h \
+  ctpl_stl.h \
   cuckoocache.h \
-  ctpl.h \
   cxxtimer.hpp \
+  dbwrapper.h \
+  deploymentinfo.h \
+  deploymentstatus.h \
+  dsnotificationinterface.h \
+  evo/assetlocktx.h \
   evo/cbtx.h \
+  evo/chainhelper.h \
+  evo/creditpool.h \
   evo/deterministicmns.h \
+  evo/dmn_types.h \
+  evo/dmnstate.h \
   evo/evodb.h \
   evo/mnauth.h \
+  evo/mnhftx.h \
+  evo/netinfo.h \
   evo/providertx.h \
+  evo/providertx_service.h \
+  evo/sharedcollateral.h \
   evo/simplifiedmns.h \
+  evo/smldiff.h \
+  evo/snapshot.h \
   evo/specialtx.h \
-  privatesend/privatesend.h \
-  privatesend/privatesend-client.h \
-  privatesend/privatesend-server.h \
-  privatesend/privatesend-util.h \
-  dsnotificationinterface.h \
-  governance/governance.h \
-  governance/governance-classes.h \
-  governance/governance-exceptions.h \
-  governance/governance-object.h \
-  governance/governance-validators.h \
-  governance/governance-vote.h \
-  governance/governance-votedb.h \
+  evo/specialtx_filter.h \
+  evo/specialtxman.h \
+  evo/types.h \
+  external_signer.h \
   flat-database.h \
-  hdchain.h \
-  fs.h \
+  flatfile.h \
+  governance/common.h \
+  governance/governance.h \
+  governance/net_governance.h \
+  governance/object.h \
+  governance/signing.h \
+  governance/superblock.h \
+  governance/vote.h \
+  governance/votedb.h \
+  gsl/assert.h \
+  gsl/pointers.h \
   httprpc.h \
   httpserver.h \
+  i2p.h \
+  index/addressindex.h \
+  index/addressindex_types.h \
+  index/addressindex_util.h \
+  index/base.h \
+  index/blockfilterindex.h \
+  index/coinstatsindex.h \
+  index/disktxpos.h \
+  index/spentindex.h \
+  index/spentindex_types.h \
+  index/timestampindex.h \
+  index/timestampindex_types.h \
+  index/txindex.h \
   indirectmap.h \
   init.h \
+  init/common.h \
+  instantsend/db.h \
+  instantsend/instantsend.h \
+  instantsend/lock.h \
+  instantsend/net_instantsend.h \
+  instantsend/signing.h \
+  interfaces/chain.h \
+  interfaces/coinjoin.h \
+  interfaces/echo.h \
+  interfaces/handler.h \
+  interfaces/init.h \
+  interfaces/ipc.h \
+  interfaces/node.h \
+  interfaces/providertx.h \
+  interfaces/wallet.h \
+  kernel/blockmanager_opts.h \
+  kernel/chain.h \
+  kernel/chainstatemanager_opts.h \
+  kernel/checks.h \
+  kernel/coinstats.h \
+  kernel/context.h \
+  kernel/cs_main.h \
+  kernel/disconnected_transactions.h \
+  kernel/mempool_entry.h \
+  kernel/mempool_limits.h \
+  kernel/mempool_options.h \
+  kernel/mempool_persist.h \
+  kernel/validation_cache_sizes.h \
   key.h \
-  keepass.h \
-  keystore.h \
-  dbwrapper.h \
+  key_io.h \
   limitedmap.h \
+  llmq/blockprocessor.h \
+  llmq/cache.h \
+  llmq/commitment.h \
+  llmq/context.h \
+  llmq/debug.h \
+  llmq/dkgmessages.h \
+  llmq/dkgsession.h \
+  llmq/dkgsessionhandler.h \
+  llmq/dkgsessionmgr.h \
+  llmq/ehf_signals.h \
+  llmq/net_dkg.h \
+  llmq/net_quorum.h \
+  llmq/net_signing.h \
+  llmq/observer.h \
+  llmq/options.h \
+  llmq/params.h \
+  llmq/quorumproofdata.h \
+  llmq/quorumproofs.h \
   llmq/quorums.h \
-  llmq/quorums_blockprocessor.h \
-  llmq/quorums_commitment.h \
-  llmq/quorums_chainlocks.h \
-  llmq/quorums_debug.h \
-  llmq/quorums_dkgsessionhandler.h \
-  llmq/quorums_dkgsessionmgr.h \
-  llmq/quorums_dkgsession.h \
-  llmq/quorums_init.h \
-  llmq/quorums_instantsend.h \
-  llmq/quorums_signing.h \
-  llmq/quorums_signing_shares.h \
-  llmq/quorums_utils.h \
-  masternode/activemasternode.h \
-  masternode/masternode-meta.h \
-  masternode/masternode-payments.h \
-  masternode/masternode-sync.h \
-  masternode/masternode-utils.h \
+  llmq/quorumsman.h \
+  llmq/signhash.h \
+  llmq/signing.h \
+  llmq/signing_shares.h \
+  llmq/snapshot.h \
+  llmq/types.h \
+  llmq/utils.h \
+  logging.h \
+  logging/timer.h \
+  mapport.h \
+  masternode/meta.h \
+  masternode/payments.h \
+  masternode/sync.h \
+  masternode/utils.h \
   memusage.h \
   merkleblock.h \
   messagesigner.h \
-  miner.h \
+  msg_result.h \
   net.h \
+  net_permissions.h \
   net_processing.h \
+  net_types.h \
   netaddress.h \
   netbase.h \
   netfulfilledman.h \
+  netgroup.h \
   netmessagemaker.h \
+  node/blockstorage.h \
+  node/caches.h \
+  node/chainstate.h \
+  node/chainstatemanager_args.h \
+  node/coin.h \
+  node/connection_types.h \
+  node/context.h \
+  node/eviction.h \
+  node/interface_ui.h \
+  node/mempool_args.h \
+  node/mempool_persist_args.h \
+  node/miner.h \
+  node/minisketchwrapper.h \
+  node/psbt.h \
+  node/sync_manager.h \
+  node/transaction.h \
+  node/txreconciliation.h \
+  node/utxo_snapshot.h \
+  node/validation_cache_args.h \
   noui.h \
+  outputtype.h \
   policy/feerate.h \
   policy/fees.h \
+  policy/fees_args.h \
+  policy/packages.h \
   policy/policy.h \
+  policy/settings.h \
   pow.h \
   protocol.h \
+  psbt.h \
   random.h \
-  reverse_iterator.h \
-  reverselock.h \
+  randomenv.h \
+  rest.h \
   rpc/blockchain.h \
   rpc/client.h \
+  rpc/json_help.h \
+  rpc/mempool.h \
   rpc/mining.h \
   rpc/protocol.h \
-  rpc/server.h \
+  rpc/rawtransaction_util.h \
   rpc/register.h \
+  rpc/request.h \
+  rpc/server.h \
+  rpc/server_util.h \
+  rpc/util.h \
   saltedhasher.h \
   scheduler.h \
+  script/descriptor.h \
+  script/keyorigin.h \
+  script/miniscript.h \
   script/sigcache.h \
   script/sign.h \
+  script/signingprovider.h \
   script/standard.h \
-  script/ismine.h \
+  shutdown.h \
+  source_location.h \
   spork.h \
   stacktraces.h \
+  stats/client.h \
+  stats/rawsender.h \
   streams.h \
   support/allocators/mt_pooled_secure.h \
+  support/allocators/pool.h \
   support/allocators/pooled_secure.h \
   support/allocators/secure.h \
   support/allocators/zeroafterfree.h \
@@ -235,240 +427,532 @@ BITCOIN_CORE_H = \
   support/lockedpool.h \
   sync.h \
   threadsafety.h \
-  threadinterrupt.h \
   timedata.h \
   torcontrol.h \
   txdb.h \
   txmempool.h \
-  ui_interface.h \
+  txorphanage.h \
+  txrequest.h \
   undo.h \
   unordered_lru_cache.h \
-  util.h \
-  utilmoneystr.h \
-  utiltime.h \
+  util/asmap.h \
+  util/bip32.h \
+  util/bitset.h \
+  util/bytevectorhash.h \
+  util/check.h \
+  util/edge.h \
+  util/epochguard.h \
+  util/error.h \
+  util/fastrange.h \
+  util/fees.h \
+  util/fs.h \
+  util/fs_helpers.h \
+  util/getuniquepath.h \
+  util/golombrice.h \
+  util/hash_type.h \
+  util/hasher.h \
+  util/helpers.h \
+  util/macros.h \
+  util/message.h \
+  util/moneystr.h \
+  util/overflow.h \
+  util/overloaded.h \
+  util/ranges_set.h \
+  util/readwritefile.h \
+  util/result.h \
+  util/serfloat.h \
+  util/settings.h \
+  util/sock.h \
+  util/spanparsing.h \
+  util/std23.h \
+  util/string.h \
+  util/subprocess.hpp \
+  util/syserror.h \
+  util/system.h \
+  util/thread.h \
+  util/threadinterrupt.h \
+  util/threadnames.h \
+  util/time.h \
+  util/tokenpipe.h \
+  util/trace.h \
+  util/translation.h \
+  util/types.h \
+  util/ui_change_type.h \
+  util/vecdeque.h \
+  util/vector.h \
+  util/wpipe.h \
   validation.h \
   validationinterface.h \
   versionbits.h \
+  wallet/bdb.h \
+  wallet/bip39.h \
+  wallet/bip39_english.h \
   wallet/coincontrol.h \
+  wallet/coinjoin.h \
+  wallet/coinselection.h \
+  wallet/context.h \
   wallet/crypter.h \
   wallet/db.h \
-  wallet/rpcwallet.h \
+  wallet/dump.h \
+  wallet/external_signer_scriptpubkeyman.h \
+  wallet/fees.h \
+  wallet/hdchain.h \
+  wallet/load.h \
+  wallet/platformkeys.h \
+  wallet/platformtypes.h \
+  wallet/receive.h \
+  wallet/rpc/util.h \
+  wallet/rpc/wallet.h \
+  wallet/salvage.h \
+  wallet/scriptpubkeyman.h \
+  wallet/spend.h \
+  wallet/sqlite.h \
+  wallet/transaction.h \
+  wallet/types.h \
   wallet/wallet.h \
   wallet/walletdb.h \
+  wallet/wallettool.h \
+  wallet/walletutil.h \
+  walletinitinterface.h \
   warnings.h \
   zmq/zmqabstractnotifier.h \
-  zmq/zmqconfig.h\
   zmq/zmqnotificationinterface.h \
-  zmq/zmqpublishnotifier.h
+  zmq/zmqpublishnotifier.h \
+  zmq/zmqrpc.h \
+  zmq/zmqutil.h
 
 
 obj/build.h: FORCE
 	@$(MKDIR_P) $(builddir)/obj
-	@$(top_srcdir)/share/genbuild.sh "$(abs_top_builddir)/src/obj/build.h" \
+	$(AM_V_GEN) $(top_srcdir)/share/genbuild.sh "$(abs_top_builddir)/src/obj/build.h" \
 	  "$(abs_top_srcdir)"
-libdash_util_a-clientversion.$(OBJEXT): obj/build.h
+libbitcoin_util_a-clientversion.$(OBJEXT): obj/build.h
 
-# server: shared between dashd and dash-qt
-libdash_server_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(MINIUPNPC_CPPFLAGS) $(EVENT_CFLAGS) $(EVENT_PTHREADS_CFLAGS)
-libdash_server_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-libdash_server_a_SOURCES = \
+# node #
+libbitcoin_node_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS) $(MINIUPNPC_CPPFLAGS) $(NATPMP_CPPFLAGS) $(EVENT_CFLAGS) $(EVENT_PTHREADS_CFLAGS)
+libbitcoin_node_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_node_a_SOURCES = \
+  active/context.cpp \
+  active/dkgsession.cpp \
+  active/dkgsessionhandler.cpp \
+  active/masternode.cpp \
   addrdb.cpp \
   addrman.cpp \
+  banman.cpp \
   batchedlogger.cpp \
-  bloom.cpp \
+  bip324.cpp \
   blockencodings.cpp \
+  blockfilter.cpp \
   chain.cpp \
-  checkpoints.cpp \
+  chainlock/chainlock.cpp \
+  chainlock/clsig.cpp \
+  chainlock/handler.cpp \
+  chainlock/signing.cpp \
+  coinjoin/coinjoin.cpp \
+  coinjoin/server.cpp \
   consensus/tx_verify.cpp \
+  dbwrapper.cpp \
+  deploymentstatus.cpp \
   dsnotificationinterface.cpp \
+  evo/assetlocktx.cpp \
   evo/cbtx.cpp \
+  evo/chainhelper.cpp \
+  evo/creditpool.cpp \
   evo/deterministicmns.cpp \
+  evo/dmnstate.cpp \
   evo/evodb.cpp \
   evo/mnauth.cpp \
+  evo/mnhftx.cpp \
   evo/providertx.cpp \
+  evo/providertx_service.cpp \
   evo/simplifiedmns.cpp \
+  evo/smldiff.cpp \
+  evo/snapshot.cpp \
   evo/specialtx.cpp \
+  evo/specialtx_filter.cpp \
+  evo/specialtxman.cpp \
+  flatfile.cpp \
+  governance/governance.cpp \
+  governance/net_governance.cpp \
+  governance/object.cpp \
+  governance/signing.cpp \
+  governance/superblock.cpp \
+  governance/vote.cpp \
+  governance/votedb.cpp \
+  gsl/assert.cpp \
   httprpc.cpp \
   httpserver.cpp \
+  i2p.cpp \
+  index/addressindex.cpp \
+  index/addressindex_util.cpp \
+  index/base.cpp \
+  index/blockfilterindex.cpp \
+  index/coinstatsindex.cpp \
+  index/spentindex.cpp \
+  index/timestampindex.cpp \
+  index/txindex.cpp \
   init.cpp \
-  dbwrapper.cpp \
-  governance/governance.cpp \
-  governance/governance-classes.cpp \
-  governance/governance-object.cpp \
-  governance/governance-validators.cpp \
-  governance/governance-vote.cpp \
-  governance/governance-votedb.cpp \
+  instantsend/db.cpp \
+  instantsend/instantsend.cpp \
+  instantsend/lock.cpp \
+  instantsend/net_instantsend.cpp \
+  instantsend/signing.cpp \
+  kernel/chain.cpp \
+  kernel/checks.cpp \
+  kernel/coinstats.cpp \
+  kernel/context.cpp \
+  kernel/cs_main.cpp \
+  kernel/mempool_persist.cpp \
+  llmq/blockprocessor.cpp \
+  llmq/commitment.cpp \
+  llmq/context.cpp \
+  llmq/debug.cpp \
+  llmq/dkgsession.cpp \
+  llmq/dkgsessionhandler.cpp \
+  llmq/dkgsessionmgr.cpp \
+  llmq/ehf_signals.cpp \
+  llmq/net_dkg.cpp \
+  llmq/net_quorum.cpp \
+  llmq/net_signing.cpp \
+  llmq/observer.cpp \
+  llmq/options.cpp \
+  llmq/quorumproofs.cpp \
   llmq/quorums.cpp \
-  llmq/quorums_blockprocessor.cpp \
-  llmq/quorums_commitment.cpp \
-  llmq/quorums_chainlocks.cpp \
-  llmq/quorums_debug.cpp \
-  llmq/quorums_dkgsessionhandler.cpp \
-  llmq/quorums_dkgsessionmgr.cpp \
-  llmq/quorums_dkgsession.cpp \
-  llmq/quorums_init.cpp \
-  llmq/quorums_instantsend.cpp \
-  llmq/quorums_signing.cpp \
-  llmq/quorums_signing_shares.cpp \
-  llmq/quorums_utils.cpp \
-  masternode/activemasternode.cpp \
-  masternode/masternode-meta.cpp \
-  masternode/masternode-payments.cpp \
-  masternode/masternode-sync.cpp \
-  masternode/masternode-utils.cpp \
-  merkleblock.cpp \
-  messagesigner.cpp \
-  miner.cpp \
+  llmq/quorumsman.cpp \
+  llmq/signhash.cpp \
+  llmq/signing.cpp \
+  llmq/signing_shares.cpp \
+  llmq/snapshot.cpp \
+  llmq/utils.cpp \
+  mapport.cpp \
+  masternode/meta.cpp \
+  masternode/payments.cpp \
+  masternode/sync.cpp \
+  masternode/utils.cpp \
   net.cpp \
-  netfulfilledman.cpp \
   net_processing.cpp \
+  netfulfilledman.cpp \
+  netgroup.cpp \
+  node/blockstorage.cpp \
+  node/caches.cpp \
+  node/chainstate.cpp \
+  node/chainstatemanager_args.cpp \
+  node/coin.cpp \
+  node/connection_types.cpp \
+  node/context.cpp \
+  node/eviction.cpp \
+  node/interface_ui.cpp \
+  node/interfaces.cpp \
+  node/mempool_args.cpp \
+  node/mempool_persist_args.cpp \
+  node/miner.cpp \
+  node/minisketchwrapper.cpp \
+  node/psbt.cpp \
+  node/sync_manager.cpp \
+  node/transaction.cpp \
+  node/txreconciliation.cpp \
+  node/utxo_snapshot.cpp \
+  node/validation_cache_args.cpp \
   noui.cpp \
   policy/fees.cpp \
+  policy/fees_args.cpp \
+  policy/packages.cpp \
   policy/policy.cpp \
+  policy/settings.cpp \
   pow.cpp \
-  privatesend/privatesend.cpp \
-  privatesend/privatesend-server.cpp \
   rest.cpp \
   rpc/blockchain.cpp \
-  rpc/masternode.cpp \
+  rpc/coinjoin.cpp \
+  rpc/evo.cpp \
+  rpc/fees.cpp \
   rpc/governance.cpp \
+  rpc/json_help.cpp \
+  rpc/masternode.cpp \
+  rpc/mempool.cpp \
   rpc/mining.cpp \
-  rpc/misc.cpp \
   rpc/net.cpp \
+  rpc/node.cpp \
+  rpc/output_script.cpp \
+  rpc/quorums.cpp \
   rpc/rawtransaction.cpp \
-  rpc/rpcevo.cpp \
-  rpc/rpcquorums.cpp \
   rpc/server.cpp \
-  rpc/privatesend.cpp \
+  rpc/server_util.cpp \
+  rpc/signmessage.cpp \
+  rpc/txoutproof.cpp \
   script/sigcache.cpp \
-  script/ismine.cpp \
+  shutdown.cpp \
   spork.cpp \
+  stats/client.cpp \
+  stats/rawsender.cpp \
   timedata.cpp \
   torcontrol.cpp \
   txdb.cpp \
   txmempool.cpp \
-  ui_interface.cpp \
+  txorphanage.cpp \
+  txrequest.cpp \
   validation.cpp \
   validationinterface.cpp \
   versionbits.cpp \
   $(BITCOIN_CORE_H)
 
+if ENABLE_WALLET
+libbitcoin_node_a_SOURCES += wallet/init.cpp
+libbitcoin_node_a_CPPFLAGS += $(BDB_CPPFLAGS)
+endif
+if !ENABLE_WALLET
+libbitcoin_node_a_SOURCES += dummywallet.cpp
+endif
+#
+
+# zmq #
 if ENABLE_ZMQ
-libdash_zmq_a_CPPFLAGS = $(BITCOIN_INCLUDES) $(ZMQ_CFLAGS)
-libdash_zmq_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-libdash_zmq_a_SOURCES = \
+libbitcoin_zmq_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS) $(ZMQ_CFLAGS)
+libbitcoin_zmq_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_zmq_a_SOURCES = \
   zmq/zmqabstractnotifier.cpp \
   zmq/zmqnotificationinterface.cpp \
-  zmq/zmqpublishnotifier.cpp
+  zmq/zmqpublishnotifier.cpp \
+  zmq/zmqrpc.cpp \
+  zmq/zmqutil.cpp
 endif
+#
 
-
-# wallet: shared between dashd and dash-qt, but only linked
-# when wallet enabled
-libdash_wallet_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
-libdash_wallet_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-libdash_wallet_a_SOURCES = \
-  keepass.cpp \
-  privatesend/privatesend-client.cpp \
-  privatesend/privatesend-util.cpp \
+# wallet #
+libbitcoin_wallet_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS) $(BDB_CPPFLAGS) $(SQLITE_CFLAGS)
+libbitcoin_wallet_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_wallet_a_SOURCES = \
+  coinjoin/client.cpp \
+  coinjoin/interfaces.cpp \
+  coinjoin/util.cpp \
+  coinjoin/walletman.cpp \
+  wallet/bip39.cpp \
+  wallet/coincontrol.cpp \
+  wallet/coinjoin.cpp \
+  wallet/coinselection.cpp \
+  wallet/context.cpp \
   wallet/crypter.cpp \
   wallet/db.cpp \
-  wallet/rpcdump.cpp \
-  wallet/rpcwallet.cpp \
+  wallet/dump.cpp \
+  wallet/external_signer_scriptpubkeyman.cpp \
+  wallet/fees.cpp \
+  wallet/hdchain.cpp \
+  wallet/interfaces.cpp \
+  wallet/load.cpp \
+  wallet/platformkeys.cpp \
+  wallet/receive.cpp \
+  wallet/rpc/addresses.cpp \
+  wallet/rpc/backup.cpp \
+  wallet/rpc/coins.cpp \
+  wallet/rpc/encrypt.cpp \
+  wallet/rpc/signmessage.cpp \
+  wallet/rpc/spend.cpp \
+  wallet/rpc/transactions.cpp \
+  wallet/rpc/util.cpp \
+  wallet/rpc/wallet.cpp \
+  wallet/scriptpubkeyman.cpp \
+  wallet/spend.cpp \
+  wallet/transaction.cpp \
   wallet/wallet.cpp \
   wallet/walletdb.cpp \
+  wallet/walletutil.cpp \
   $(BITCOIN_CORE_H)
 
-# crypto primitives library
-crypto_libdash_crypto_base_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_CONFIG_INCLUDES) $(PIC_FLAGS)
-crypto_libdash_crypto_base_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) $(PIC_FLAGS)
-crypto_libdash_crypto_base_a_SOURCES = \
+if USE_SQLITE
+libbitcoin_wallet_a_SOURCES += wallet/sqlite.cpp
+endif
+if USE_BDB
+libbitcoin_wallet_a_SOURCES += wallet/bdb.cpp wallet/salvage.cpp
+endif
+#
+
+# wallet tool #
+libbitcoin_wallet_tool_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS)
+libbitcoin_wallet_tool_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_wallet_tool_a_SOURCES = \
+  wallet/wallettool.cpp \
+  $(BITCOIN_CORE_H)
+#
+
+# crypto #
+crypto_libbitcoin_crypto_base_la_CPPFLAGS = $(AM_CPPFLAGS) $(PIC_FLAGS)
+
+# Specify -static in both CXXFLAGS and LDFLAGS so libtool will only build a
+# static version of this library. We don't need a dynamic version, and a dynamic
+# version can't be used on windows anyway because the library doesn't currently
+# export DLL symbols.
+crypto_libbitcoin_crypto_base_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) $(PIC_FLAGS) -static
+crypto_libbitcoin_crypto_base_la_LDFLAGS = $(AM_LDFLAGS) -static
+
+crypto_libbitcoin_crypto_base_la_SOURCES = \
   crypto/aes.cpp \
   crypto/aes.h \
-  crypto/chacha_poly_aead.h \
-  crypto/chacha_poly_aead.cpp \
-  crypto/chacha20.h \
   crypto/chacha20.cpp \
+  crypto/chacha20.h \
+  crypto/chacha20poly1305.cpp \
+  crypto/chacha20poly1305.h \
   crypto/common.h \
+  crypto/hkdf_sha256_32.cpp \
+  crypto/hkdf_sha256_32.h \
   crypto/hmac_sha256.cpp \
   crypto/hmac_sha256.h \
   crypto/hmac_sha512.cpp \
   crypto/hmac_sha512.h \
-  crypto/poly1305.h \
+  crypto/muhash.cpp \
+  crypto/muhash.h \
+  crypto/pkcs5_pbkdf2_hmac_sha512.cpp \
+  crypto/pkcs5_pbkdf2_hmac_sha512.h \
   crypto/poly1305.cpp \
+  crypto/poly1305.h \
   crypto/ripemd160.cpp \
-  crypto/aes_helper.c \
   crypto/ripemd160.h \
   crypto/sha1.cpp \
   crypto/sha1.h \
   crypto/sha256.cpp \
   crypto/sha256.h \
+  crypto/sha256_sse4.cpp \
+  crypto/sha3.cpp \
+  crypto/sha3.h \
   crypto/sha512.cpp \
-  crypto/sha512.h
+  crypto/sha512.h \
+  crypto/siphash.cpp \
+  crypto/siphash.h
 
-if USE_ASM
-crypto_libdash_crypto_base_a_SOURCES += crypto/sha256_sse4.cpp
-endif
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_sse41_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_sse41_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_sse41_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_sse41_la_CXXFLAGS += $(SSE41_CXXFLAGS)
+crypto_libbitcoin_crypto_sse41_la_CPPFLAGS += -DENABLE_SSE41
+crypto_libbitcoin_crypto_sse41_la_SOURCES = crypto/sha256_sse41.cpp
 
-crypto_libdash_crypto_sse41_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-crypto_libdash_crypto_sse41_a_CPPFLAGS = $(AM_CPPFLAGS)
-crypto_libdash_crypto_sse41_a_CXXFLAGS += $(SSE41_CXXFLAGS)
-crypto_libdash_crypto_sse41_a_CPPFLAGS += -DENABLE_SSE41
-crypto_libdash_crypto_sse41_a_SOURCES = crypto/sha256_sse41.cpp
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_avx2_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_avx2_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_avx2_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_avx2_la_CXXFLAGS += $(AVX2_CXXFLAGS)
+crypto_libbitcoin_crypto_avx2_la_CPPFLAGS += -DENABLE_AVX2
+crypto_libbitcoin_crypto_avx2_la_SOURCES = crypto/sha256_avx2.cpp
 
-crypto_libdash_crypto_avx2_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-crypto_libdash_crypto_avx2_a_CPPFLAGS = $(AM_CPPFLAGS)
-crypto_libdash_crypto_avx2_a_CXXFLAGS += $(AVX2_CXXFLAGS)
-crypto_libdash_crypto_avx2_a_CPPFLAGS += -DENABLE_AVX2
-crypto_libdash_crypto_avx2_a_SOURCES = crypto/sha256_avx2.cpp
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_sph_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_sph_la_CXXFLAGS = $(AM_CXXFLAGS) $(SPHLIB_FLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_sph_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_sph_la_CFLAGS = $(SPHLIB_FLAGS)
+crypto_libbitcoin_crypto_sph_la_CPPFLAGS += \
+  -DSPH_SMALL_FOOTPRINT_CUBEHASH=1 \
+  -DSPH_SMALL_FOOTPRINT_JH=1
+crypto_libbitcoin_crypto_sph_la_SOURCES = \
+  crypto/x11/aes.cpp \
+  crypto/x11/aes.h \
+  crypto/x11/blake.c \
+  crypto/x11/bmw.c \
+  crypto/x11/cubehash.c \
+  crypto/x11/dispatch.cpp \
+  crypto/x11/dispatch.h \
+  crypto/x11/echo.cpp \
+  crypto/x11/groestl.c \
+  crypto/x11/jh.c \
+  crypto/x11/keccak.c \
+  crypto/x11/luffa.c \
+  crypto/x11/shavite.cpp \
+  crypto/x11/simd.c \
+  crypto/x11/skein.c \
+  crypto/x11/sph_blake.h \
+  crypto/x11/sph_bmw.h \
+  crypto/x11/sph_cubehash.h \
+  crypto/x11/sph_echo.h \
+  crypto/x11/sph_groestl.h \
+  crypto/x11/sph_jh.h \
+  crypto/x11/sph_keccak.h \
+  crypto/x11/sph_luffa.h \
+  crypto/x11/sph_shavite.h \
+  crypto/x11/sph_simd.h \
+  crypto/x11/sph_skein.h \
+  crypto/x11/sph_types.h \
+  crypto/x11/util/consts_aes.hpp \
+  crypto/x11/util/util.hpp
 
-# x11
-crypto_libdash_crypto_base_a_SOURCES += \
-  crypto/blake.c \
-  crypto/bmw.c \
-  crypto/cubehash.c \
-  crypto/echo.c \
-  crypto/groestl.c \
-  crypto/jh.c \
-  crypto/keccak.c \
-  crypto/luffa.c \
-  crypto/shavite.c \
-  crypto/simd.c \
-  crypto/skein.c \
-  crypto/sph_blake.h \
-  crypto/sph_bmw.h \
-  crypto/sph_cubehash.h \
-  crypto/sph_echo.h \
-  crypto/sph_groestl.h \
-  crypto/sph_jh.h \
-  crypto/sph_keccak.h \
-  crypto/sph_luffa.h \
-  crypto/sph_shavite.h \
-  crypto/sph_simd.h \
-  crypto/sph_skein.h \
-  crypto/sph_types.h
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_arm_aes_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_arm_aes_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_arm_aes_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_arm_aes_la_CXXFLAGS += $(ARM_AES_CXXFLAGS)
+crypto_libbitcoin_crypto_arm_aes_la_CPPFLAGS += -DENABLE_ARM_AES
+crypto_libbitcoin_crypto_arm_aes_la_SOURCES = \
+  crypto/x11/arm_crypto/echo.cpp \
+  crypto/x11/arm_crypto/shavite.cpp
 
-crypto_libdash_crypto_shani_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-crypto_libdash_crypto_shani_a_CPPFLAGS = $(AM_CPPFLAGS)
-crypto_libdash_crypto_shani_a_CXXFLAGS += $(SHANI_CXXFLAGS)
-crypto_libdash_crypto_shani_a_CPPFLAGS += -DENABLE_SHANI
-crypto_libdash_crypto_shani_a_SOURCES = crypto/sha256_shani.cpp
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_arm_neon_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_arm_neon_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_arm_neon_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_arm_neon_la_CXXFLAGS += $(ARM_NEON_CXXFLAGS)
+crypto_libbitcoin_crypto_arm_neon_la_CPPFLAGS += -DENABLE_ARM_NEON
+crypto_libbitcoin_crypto_arm_neon_la_SOURCES = \
+  crypto/x11/arm_neon/echo.cpp
 
-# consensus: shared between all executables that validate any consensus rules.
-libdash_consensus_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
-libdash_consensus_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-libdash_consensus_a_SOURCES = \
-  amount.h \
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_ssse3_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_ssse3_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_ssse3_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_ssse3_la_CXXFLAGS += $(SSSE3_CXXFLAGS)
+crypto_libbitcoin_crypto_ssse3_la_CPPFLAGS += -DENABLE_SSSE3
+crypto_libbitcoin_crypto_ssse3_la_SOURCES = \
+  crypto/x11/ssse3/echo.cpp
+
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_x86_aesni_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_x86_aesni_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_x86_aesni_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_x86_aesni_la_CXXFLAGS += $(X86_AESNI_CXXFLAGS)
+crypto_libbitcoin_crypto_x86_aesni_la_CPPFLAGS += -DENABLE_SSE41 -DENABLE_X86_AESNI
+crypto_libbitcoin_crypto_x86_aesni_la_SOURCES = \
+  crypto/x11/x86_aesni/echo.cpp \
+  crypto/x11/x86_aesni/shavite.cpp
+
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_x86_shani_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_x86_shani_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_x86_shani_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_x86_shani_la_CXXFLAGS += $(X86_SHANI_CXXFLAGS)
+crypto_libbitcoin_crypto_x86_shani_la_CPPFLAGS += -DENABLE_SSE41 -DENABLE_X86_SHANI
+crypto_libbitcoin_crypto_x86_shani_la_SOURCES = crypto/sha256_x86_shani.cpp
+
+# See explanation for -static in crypto_libbitcoin_crypto_base_la's LDFLAGS and
+# CXXFLAGS above
+crypto_libbitcoin_crypto_arm_shani_la_LDFLAGS = $(AM_LDFLAGS) -static
+crypto_libbitcoin_crypto_arm_shani_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -static
+crypto_libbitcoin_crypto_arm_shani_la_CPPFLAGS = $(AM_CPPFLAGS)
+crypto_libbitcoin_crypto_arm_shani_la_CXXFLAGS += $(ARM_SHANI_CXXFLAGS)
+crypto_libbitcoin_crypto_arm_shani_la_CPPFLAGS += -DENABLE_ARM_SHANI
+crypto_libbitcoin_crypto_arm_shani_la_SOURCES = crypto/sha256_arm_shani.cpp
+#
+
+# consensus #
+libbitcoin_consensus_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS)
+libbitcoin_consensus_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_consensus_a_SOURCES = \
   arith_uint256.cpp \
   arith_uint256.h \
   bls/bls.cpp \
   bls/bls.h \
+  consensus/amount.h \
   consensus/merkle.cpp \
   consensus/merkle.h \
   consensus/params.h \
+  consensus/tx_check.cpp \
   consensus/validation.h \
   hash.cpp \
   hash.h \
+  hash_x11.h \
   prevector.h \
   primitives/block.cpp \
   primitives/block.h \
@@ -476,7 +960,7 @@ libdash_consensus_a_SOURCES = \
   primitives/transaction.h \
   pubkey.cpp \
   pubkey.h \
-  script/dashconsensus.cpp \
+  script/bitcoinconsensus.cpp \
   script/interpreter.cpp \
   script/interpreter.h \
   script/script.cpp \
@@ -484,115 +968,176 @@ libdash_consensus_a_SOURCES = \
   script/script_error.cpp \
   script/script_error.h \
   serialize.h \
+  span.h \
   streams.h \
   tinyformat.h \
   uint256.cpp \
   uint256.h \
-  utilstrencodings.cpp \
-  utilstrencodings.h \
+  util/strencodings.cpp \
+  util/strencodings.h \
+  util/string.cpp \
   version.h
+#
 
-# common: shared between dashd, and dash-qt and non-server tools
-libdash_common_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
-libdash_common_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-libdash_common_a_SOURCES = \
+# common #
+libbitcoin_common_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS)
+libbitcoin_common_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_common_a_SOURCES = \
   base58.cpp \
-  bip39.cpp \
+  bech32.cpp \
   chainparams.cpp \
   coins.cpp \
+  common/bloom.cpp \
+  common/init.cpp \
+  common/interfaces.cpp \
+  common/run_command.cpp \
+  common/url.cpp \
   compressor.cpp \
   core_read.cpp \
   core_write.cpp \
-  hdchain.cpp \
+  deploymentinfo.cpp \
+  evo/core_write.cpp \
+  evo/netinfo.cpp \
+  evo/providertx_util.cpp \
+  external_signer.cpp \
+  governance/common.cpp \
+  init/common.cpp \
   key.cpp \
-  keystore.cpp \
+  key_io.cpp \
+  llmq/core_write.cpp \
+  merkleblock.cpp \
+  net_permissions.cpp \
+  net_types.cpp \
   netaddress.cpp \
   netbase.cpp \
+  outputtype.cpp \
   policy/feerate.cpp \
+  policy/policy.cpp \
   protocol.cpp \
+  psbt.cpp \
+  rpc/external_signer.cpp \
+  rpc/rawtransaction_util.cpp \
+  rpc/request.cpp \
+  rpc/util.cpp \
   saltedhasher.cpp \
   scheduler.cpp \
+  script/descriptor.cpp \
+  script/miniscript.cpp \
   script/sign.cpp \
+  script/signingprovider.cpp \
   script/standard.cpp \
   warnings.cpp \
   $(BITCOIN_CORE_H)
+#
 
-# util: shared between all executables.
-# This library *must* be included to make sure that the glibc
-# backward-compatibility objects and their sanity checks are linked.
-libdash_util_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
-libdash_util_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-libdash_util_a_SOURCES = \
+# util #
+libbitcoin_util_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
+libbitcoin_util_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_util_a_SOURCES = \
   bls/bls_batchverifier.h \
   bls/bls_ies.cpp \
   bls/bls_ies.h \
   bls/bls_worker.cpp \
   bls/bls_worker.h \
-  support/lockedpool.cpp \
   chainparamsbase.cpp \
   clientversion.cpp \
-  compat/glibc_sanity.cpp \
-  compat/glibcxx_sanity.cpp \
-  compat/strnlen.cpp \
-  fs.cpp \
+  coinjoin/common.cpp \
+  coinjoin/options.cpp \
+  logging.cpp \
+  messagesigner.cpp \
   random.cpp \
-  rpc/protocol.cpp \
+  randomenv.cpp \
   stacktraces.cpp \
+  streams.cpp \
   support/cleanse.cpp \
+  support/lockedpool.cpp \
   sync.cpp \
-  threadinterrupt.cpp \
-  util.cpp \
-  utilmoneystr.cpp \
-  utilstrencodings.cpp \
-  utiltime.cpp \
+  util/asmap.cpp \
+  util/bip32.cpp \
+  util/bytevectorhash.cpp \
+  util/check.cpp \
+  util/edge.cpp \
+  util/error.cpp \
+  util/fees.cpp \
+  util/fs.cpp \
+  util/fs_helpers.cpp \
+  util/getuniquepath.cpp \
+  util/hasher.cpp \
+  util/message.cpp \
+  util/moneystr.cpp \
+  util/ranges_set.cpp \
+  util/readwritefile.cpp \
+  util/serfloat.cpp \
+  util/settings.cpp \
+  util/sock.cpp \
+  util/spanparsing.cpp \
+  util/strencodings.cpp \
+  util/string.cpp \
+  util/syserror.cpp \
+  util/system.cpp \
+  util/thread.cpp \
+  util/threadinterrupt.cpp \
+  util/threadnames.cpp \
+  util/time.cpp \
+  util/tokenpipe.cpp \
+  util/wpipe.cpp \
   $(BITCOIN_CORE_H)
+#
 
-if GLIBC_BACK_COMPAT
-libdash_util_a_SOURCES += compat/glibc_compat.cpp
-AM_LDFLAGS += -Wl,--wrap=log2f -Wl,--wrap=__divmoddi4
-endif
-
-# cli: shared between dash-cli and dash-qt
-libdash_cli_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
-libdash_cli_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-libdash_cli_a_SOURCES = \
+# cli #
+libbitcoin_cli_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
+libbitcoin_cli_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoin_cli_a_SOURCES = \
+  compat/stdin.h \
+  compat/stdin.cpp \
   rpc/client.cpp \
   $(BITCOIN_CORE_H)
 
-nodist_libdash_util_a_SOURCES = $(srcdir)/obj/build.h
+nodist_libbitcoin_util_a_SOURCES = $(srcdir)/obj/build.h
 #
 
-# dashd binary #
-dashd_SOURCES = dashd.cpp
-dashd_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
-dashd_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-dashd_LDFLAGS = $(LDFLAGS_WRAP_EXCEPTIONS) $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
+# dashd & dash-node binaries #
+bitcoin_daemon_sources = bitcoind.cpp
+bitcoin_bin_cppflags = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
+bitcoin_bin_cxxflags = $(AM_CXXFLAGS) $(PIE_FLAGS)
+bitcoin_bin_ldflags = $(LDFLAGS_WRAP_EXCEPTIONS) $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) $(PTHREAD_FLAGS)
 
 if TARGET_WINDOWS
-dashd_SOURCES += dashd-res.rc
+bitcoin_daemon_sources += dashd-res.rc
 endif
 
-dashd_LDADD = \
-  $(LIBBITCOIN_SERVER) \
-  $(LIBBITCOIN_COMMON) \
-  $(LIBUNIVALUE) \
-  $(LIBBITCOIN_UTIL) \
+bitcoin_bin_ldadd = \
   $(LIBBITCOIN_WALLET) \
+  $(LIBBITCOIN_COMMON) \
+  $(LIBBITCOIN_UTIL) \
+  $(LIBUNIVALUE) \
   $(LIBBITCOIN_ZMQ) \
   $(LIBBITCOIN_CONSENSUS) \
   $(LIBBITCOIN_CRYPTO) \
+  $(LIBDASHBLS) \
   $(LIBLEVELDB) \
-  $(LIBLEVELDB_SSE42) \
   $(LIBMEMENV) \
   $(LIBSECP256K1)
 
-dashd_LDADD += $(BACKTRACE_LIB) $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS) $(BLS_LIBS)
+bitcoin_bin_ldadd += $(BACKTRACE_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(NATPMP_LIBS) $(SQLITE_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS) $(GMP_LIBS)
+
+dashd_SOURCES = $(bitcoin_daemon_sources) init/bitcoind.cpp
+dashd_CPPFLAGS = $(bitcoin_bin_cppflags)
+dashd_CXXFLAGS = $(bitcoin_bin_cxxflags)
+dashd_LDFLAGS = $(bitcoin_bin_ldflags)
+dashd_LDADD = $(LIBBITCOIN_NODE) $(bitcoin_bin_ldadd)
+
+dash_node_SOURCES = $(bitcoin_daemon_sources) init/bitcoin-node.cpp
+dash_node_CPPFLAGS = $(bitcoin_bin_cppflags)
+dash_node_CXXFLAGS = $(bitcoin_bin_cxxflags)
+dash_node_LDFLAGS = $(bitcoin_bin_ldflags)
+dash_node_LDADD = $(LIBBITCOIN_NODE) $(bitcoin_bin_ldadd) $(LIBBITCOIN_IPC) $(LIBMULTIPROCESS_LIBS)
 
 # dash-cli binary #
-dash_cli_SOURCES = dash-cli.cpp
+dash_cli_SOURCES = bitcoin-cli.cpp
 dash_cli_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(EVENT_CFLAGS)
 dash_cli_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-dash_cli_LDFLAGS = $(LDFLAGS_WRAP_EXCEPTIONS) $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
+dash_cli_LDFLAGS = $(LDFLAGS_WRAP_EXCEPTIONS) $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) $(PTHREAD_FLAGS)
 
 if TARGET_WINDOWS
 dash_cli_SOURCES += dash-cli-res.rc
@@ -601,16 +1146,17 @@ endif
 dash_cli_LDADD = \
   $(LIBBITCOIN_CLI) \
   $(LIBUNIVALUE) \
+  $(LIBBITCOIN_COMMON) \
   $(LIBBITCOIN_UTIL) \
   $(LIBBITCOIN_CRYPTO)
-dash_cli_LDADD += $(BACKTRACE_LIB) $(BOOST_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(EVENT_LIBS) $(BLS_LIBS)
+dash_cli_LDADD += $(BACKTRACE_LIBS) $(EVENT_LIBS) $(GMP_LIBS)
 #
 
 # dash-tx binary #
-dash_tx_SOURCES = dash-tx.cpp
+dash_tx_SOURCES = bitcoin-tx.cpp
 dash_tx_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
 dash_tx_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
-dash_tx_LDFLAGS = $(LDFLAGS_WRAP_EXCEPTIONS) $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
+dash_tx_LDFLAGS = $(LDFLAGS_WRAP_EXCEPTIONS) $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) $(PTHREAD_FLAGS)
 
 if TARGET_WINDOWS
 dash_tx_SOURCES += dash-tx-res.rc
@@ -622,23 +1168,269 @@ dash_tx_LDADD = \
   $(LIBBITCOIN_UTIL) \
   $(LIBBITCOIN_CONSENSUS) \
   $(LIBBITCOIN_CRYPTO) \
+  $(LIBDASHBLS) \
   $(LIBSECP256K1)
 
-dash_tx_LDADD += $(BACKTRACE_LIB) $(BOOST_LIBS) $(CRYPTO_LIBS) $(BLS_LIBS)
+dash_tx_LDADD += $(BACKTRACE_LIBS) $(GMP_LIBS)
+#
+
+# dash-wallet binary #
+dash_wallet_SOURCES = bitcoin-wallet.cpp
+dash_wallet_SOURCES += init/bitcoin-wallet.cpp
+dash_wallet_CPPFLAGS = $(bitcoin_bin_cppflags)
+dash_wallet_CXXFLAGS = $(bitcoin_bin_cxxflags)
+dash_wallet_LDFLAGS = $(bitcoin_bin_ldflags)
+dash_wallet_LDADD = \
+  $(LIBBITCOIN_WALLET_TOOL) \
+  $(LIBBITCOIN_WALLET) \
+  $(LIBBITCOIN_COMMON) \
+  $(LIBBITCOIN_UTIL) \
+  $(LIBUNIVALUE) \
+  $(LIBBITCOIN_CONSENSUS) \
+  $(LIBBITCOIN_CRYPTO) \
+  $(LIBDASHBLS) \
+  $(LIBSECP256K1) \
+  $(BACKTRACE_LIBS) \
+  $(BOOST_LIBS) \
+  $(BDB_LIBS) \
+  $(SQLITE_LIBS) \
+  $(GMP_LIBS)
+
+if TARGET_WINDOWS
+dash_wallet_SOURCES += dash-wallet-res.rc
+endif
+#
+
+# dash-util binary #
+dash_util_SOURCES = bitcoin-util.cpp
+dash_util_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
+dash_util_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+dash_util_LDFLAGS = $(LDFLAGS_WRAP_EXCEPTIONS) $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) $(PTHREAD_FLAGS)
+
+if TARGET_WINDOWS
+dash_util_SOURCES += bitcoin-util-res.rc
+endif
+
+dash_util_LDADD = \
+  $(LIBBITCOIN_COMMON) \
+  $(LIBBITCOIN_UTIL) \
+  $(LIBUNIVALUE) \
+  $(LIBBITCOIN_CONSENSUS) \
+  $(LIBBITCOIN_CRYPTO) \
+  $(LIBSECP256K1) \
+  $(BACKTRACE_LIBS)
+
+dash_util_LDADD += $(BOOST_LIBS)
+
+# dash-chainstate binary #
+dash_chainstate_SOURCES = bitcoin-chainstate.cpp
+dash_chainstate_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS)
+dash_chainstate_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+
+# $(LIBTOOL_APP_LDFLAGS) deliberately omitted here so that we can test linking
+# dash-chainstate against libdashkernel as a shared or static library by
+# setting --{en,dis}able-shared.
+dash_chainstate_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(PTHREAD_FLAGS)
+dash_chainstate_LDADD = $(LIBBITCOINKERNEL)
+#
+
+# dashkernel library #
+if BUILD_BITCOIN_KERNEL_LIB
+lib_LTLIBRARIES += $(LIBBITCOINKERNEL)
+
+libdashkernel_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS) $(PTHREAD_FLAGS)
+libdashkernel_la_LIBADD = $(LIBBITCOIN_CRYPTO) $(LIBUNIVALUE) $(LIBLEVELDB) $(LIBMEMENV) $(LIBSECP256K1) $(LIBDASHBLS) $(GMP_LIBS)
+libdashkernel_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(builddir)/obj -I$(srcdir)/secp256k1/include -DBUILD_BITCOIN_INTERNAL -isystem$(srcdir)/dashbls/include -isystem$(srcdir)/dashbls/depends/relic/include -isystem$(srcdir)/dashbls/depends/minialloc/include -isystem$(srcdir)/immer $(BOOST_CPPFLAGS) $(LEVELDB_CPPFLAGS) -I$(srcdir)/$(UNIVALUE_INCLUDE_DIR_INT)
+
+# libdashkernel requires default symbol visibility, explicitly specify that
+# here so that things still work even when user configures with
+#   --enable-reduce-exports
+#
+# Note this is a quick hack that will be removed as we incrementally define what
+# to export from the library.
+libdashkernel_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) -fvisibility=default
+
+# TODO: For now, Specify -static in both CXXFLAGS and LDFLAGS when building for
+#       windows targets so libtool will only build a static version of this
+#       library. There are unresolved problems when building dll's for mingw-w64
+#       and attempting to statically embed libstdc++, libpthread, etc.
+if TARGET_WINDOWS
+libdashkernel_la_LDFLAGS += -static
+libdashkernel_la_CXXFLAGS += -static
+endif
+
+# TODO: libdashkernel is a work in progress consensus engine library, as more
+#       and more modules are decoupled from the consensus engine, this list will
+#       shrink to only those which are absolutely necessary. For example, things
+#       like index/*.cpp will be removed.
+libdashkernel_la_SOURCES = \
+  kernel/bitcoinkernel.cpp \
+  arith_uint256.cpp \
+  base58.cpp \
+  batchedlogger.cpp \
+  bech32.cpp \
+  blockfilter.cpp \
+  bls/bls.cpp \
+  bls/bls_worker.cpp \
+  chain.cpp \
+  chainlock/chainlock.cpp \
+  chainlock/clsig.cpp \
+  chainparams.cpp \
+  chainparamsbase.cpp \
+  clientversion.cpp \
+  coins.cpp \
+  common/bloom.cpp \
+  compressor.cpp \
+  consensus/merkle.cpp \
+  consensus/tx_check.cpp \
+  consensus/tx_verify.cpp \
+  core_read.cpp \
+  dbwrapper.cpp \
+  deploymentinfo.cpp \
+  deploymentstatus.cpp \
+  evo/assetlocktx.cpp \
+  evo/cbtx.cpp \
+  evo/chainhelper.cpp \
+  evo/creditpool.cpp \
+  evo/deterministicmns.cpp \
+  evo/dmnstate.cpp \
+  evo/evodb.cpp \
+  evo/mnhftx.cpp \
+  evo/netinfo.cpp \
+  evo/providertx.cpp \
+  evo/providertx_util.cpp \
+  evo/simplifiedmns.cpp \
+  evo/smldiff.cpp \
+  evo/specialtx.cpp \
+  evo/specialtx_filter.cpp \
+  evo/specialtxman.cpp \
+  flatfile.cpp \
+  governance/common.cpp \
+  governance/object.cpp \
+  governance/superblock.cpp \
+  governance/vote.cpp \
+  governance/votedb.cpp \
+  gsl/assert.cpp \
+  hash.cpp \
+  index/addressindex.cpp \
+  index/addressindex_util.cpp \
+  index/base.cpp \
+  index/blockfilterindex.cpp \
+  index/coinstatsindex.cpp \
+  index/spentindex.cpp \
+  index/txindex.cpp \
+  init/common.cpp \
+  instantsend/db.cpp \
+  instantsend/instantsend.cpp \
+  instantsend/lock.cpp \
+  kernel/chain.cpp \
+  kernel/checks.cpp \
+  kernel/coinstats.cpp \
+  kernel/context.cpp \
+  kernel/cs_main.cpp \
+  kernel/mempool_persist.cpp \
+  key.cpp \
+  key_io.cpp \
+  llmq/blockprocessor.cpp \
+  llmq/commitment.cpp \
+  llmq/context.cpp \
+  llmq/debug.cpp \
+  llmq/dkgsession.cpp \
+  llmq/dkgsessionhandler.cpp \
+  llmq/dkgsessionmgr.cpp \
+  llmq/options.cpp \
+  llmq/quorums.cpp \
+  llmq/quorumsman.cpp \
+  llmq/signhash.cpp \
+  llmq/signing.cpp \
+  llmq/snapshot.cpp \
+  llmq/utils.cpp \
+  logging.cpp \
+  masternode/meta.cpp \
+  masternode/payments.cpp \
+  masternode/sync.cpp \
+  merkleblock.cpp \
+  messagesigner.cpp \
+  netaddress.cpp \
+  netbase.cpp \
+  node/blockstorage.cpp \
+  node/chainstate.cpp \
+  node/interface_ui.cpp \
+  node/transaction.cpp \
+  node/utxo_snapshot.cpp \
+  policy/feerate.cpp \
+  policy/fees.cpp \
+  policy/packages.cpp \
+  policy/policy.cpp \
+  policy/settings.cpp \
+  pow.cpp \
+  primitives/block.cpp \
+  primitives/transaction.cpp \
+  protocol.cpp \
+  pubkey.cpp \
+  random.cpp \
+  randomenv.cpp \
+  saltedhasher.cpp \
+  scheduler.cpp \
+  script/interpreter.cpp \
+  script/script.cpp \
+  script/script_error.cpp \
+  script/sigcache.cpp \
+  script/standard.cpp \
+  shutdown.cpp \
+  spork.cpp \
+  streams.cpp \
+  support/cleanse.cpp \
+  support/lockedpool.cpp \
+  sync.cpp \
+  timedata.cpp \
+  txdb.cpp \
+  txmempool.cpp \
+  uint256.cpp \
+  util/bytevectorhash.cpp \
+  util/check.cpp \
+  util/fs.cpp \
+  util/fs_helpers.cpp \
+  util/getuniquepath.cpp \
+  util/hasher.cpp \
+  util/message.cpp \
+  util/moneystr.cpp \
+  util/ranges_set.cpp \
+  util/serfloat.cpp \
+  util/settings.cpp \
+  util/sock.cpp \
+  util/strencodings.cpp \
+  util/string.cpp \
+  util/syserror.cpp \
+  util/system.cpp \
+  util/thread.cpp \
+  util/threadinterrupt.cpp \
+  util/threadnames.cpp \
+  util/time.cpp \
+  util/tokenpipe.cpp \
+  validation.cpp \
+  validationinterface.cpp \
+  versionbits.cpp \
+  warnings.cpp
+
+# Required for obj/build.h to be generated first.
+# More details: https://www.gnu.org/software/automake/manual/html_node/Built-Sources-Example.html
+libdashkernel_la-clientversion.l$(OBJEXT): obj/build.h
+endif # BUILD_BITCOIN_KERNEL_LIB
 #
 
 # dashconsensus library #
 if BUILD_BITCOIN_LIBS
-include_HEADERS = script/dashconsensus.h
-libdashconsensus_la_SOURCES = support/cleanse.cpp $(crypto_libdash_crypto_base_a_SOURCES) $(libdash_consensus_a_SOURCES)
+lib_LTLIBRARIES += $(LIBBITCOINCONSENSUS)
 
-if GLIBC_BACK_COMPAT
-  libdashconsensus_la_SOURCES += compat/glibc_compat.cpp
-endif
+include_HEADERS = script/bitcoinconsensus.h
+libdashconsensus_la_SOURCES = support/cleanse.cpp $(crypto_libbitcoin_crypto_base_la_SOURCES) $(crypto_libbitcoin_crypto_sph_la_SOURCES) $(libbitcoin_consensus_a_SOURCES)
 
 libdashconsensus_la_LDFLAGS = $(AM_LDFLAGS) -no-undefined $(RELDFLAGS)
-libdashconsensus_la_LIBADD = $(LIBSECP256K1) $(BLS_LIBS)
-libdashconsensus_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(builddir)/obj -I$(srcdir)/secp256k1/include -DBUILD_BITCOIN_INTERNAL
+libdashconsensus_la_LIBADD = $(LIBDASHBLS) $(LIBSECP256K1) $(GMP_LIBS)
+libdashconsensus_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(builddir)/obj -I$(srcdir)/secp256k1/include -DBUILD_BITCOIN_INTERNAL -DDISABLE_OPTIMIZED_SHA256
+libdashconsensus_la_CPPFLAGS += -isystem$(srcdir)/dashbls/include -isystem$(srcdir)/dashbls/depends/relic/include -isystem$(srcdir)/dashbls/depends/minialloc/include
+libdashconsensus_la_CPPFLAGS += -isystem$(srcdir)/immer
 libdashconsensus_la_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 
 endif
@@ -655,76 +1447,126 @@ CLEANFILES = $(EXTRA_LIBRARIES)
 CLEANFILES += *.gcda *.gcno
 CLEANFILES += compat/*.gcda compat/*.gcno
 CLEANFILES += consensus/*.gcda consensus/*.gcno
+CLEANFILES += crc32c/src/*.gcda crc32c/src/*.gcno
 CLEANFILES += crypto/*.gcda crypto/*.gcno
+CLEANFILES += index/*.gcda index/*.gcno
+CLEANFILES += interfaces/*.gcda interfaces/*.gcno
+CLEANFILES += node/*.gcda node/*.gcno
 CLEANFILES += policy/*.gcda policy/*.gcno
 CLEANFILES += primitives/*.gcda primitives/*.gcno
+CLEANFILES += rpc/*.gcda rpc/*.gcno
 CLEANFILES += script/*.gcda script/*.gcno
 CLEANFILES += support/*.gcda support/*.gcno
 CLEANFILES += univalue/*.gcda univalue/*.gcno
+CLEANFILES += util/*.gcda util/*.gcno
 CLEANFILES += wallet/*.gcda wallet/*.gcno
 CLEANFILES += wallet/test/*.gcda wallet/test/*.gcno
 CLEANFILES += zmq/*.gcda zmq/*.gcno
+CLEANFILES += obj/build.h
 
-IMMER_DIST = immer
+IMMER_DIST = immer/immer
+LIBDASHBLS_DIST = dashbls
 
-DISTCLEANFILES = obj/build.h
+EXTRA_DIST = \
+  $(CTAES_DIST)   \
+  $(IMMER_DIST)   \
+  $(LIBDASHBLS_DIST)
 
-EXTRA_DIST = $(CTAES_DIST)
-EXTRA_DIST += $(IMMER_DIST)
-
-
-config/dash-config.h: config/stamp-h1
+config/bitcoin-config.h: config/stamp-h1
 	@$(MAKE) -C $(top_builddir) $(subdir)/$(@)
-config/stamp-h1: $(top_srcdir)/$(subdir)/config/dash-config.h.in $(top_builddir)/config.status
+config/stamp-h1: $(top_srcdir)/$(subdir)/config/bitcoin-config.h.in $(top_builddir)/config.status
 	$(AM_V_at)$(MAKE) -C $(top_builddir) $(subdir)/$(@)
-$(top_srcdir)/$(subdir)/config/dash-config.h.in:  $(am__configure_deps)
-	$(AM_V_at)$(MAKE) -C $(top_srcdir) $(subdir)/config/dash-config.h.in
+$(top_srcdir)/$(subdir)/config/bitcoin-config.h.in:  $(am__configure_deps)
+	$(AM_V_at)$(MAKE) -C $(top_srcdir) $(subdir)/config/bitcoin-config.h.in
 
 
 clean-local:
+	-$(MAKE) -C dashbls clean
 	-$(MAKE) -C secp256k1 clean
-	-$(MAKE) -C univalue clean
 	-rm -f leveldb/*/*.gcda leveldb/*/*.gcno leveldb/helpers/memenv/*.gcda leveldb/helpers/memenv/*.gcno
 	-rm -f config.h
 	-rm -rf test/__pycache__
 	-rm -rf *.dSYM test/*.dSYM bench/*.dSYM qt/*.dSYM qt/test/*.dSYM
 
 .rc.o:
-	@test -f $(WINDRES)
+	@command -v $(WINDRES) || (echo "windres $(WINDRES) not found, but is required to compile windows resource files"; exit 1)
 	## FIXME: How to get the appropriate modulename_CPPFLAGS in here?
 	$(AM_V_GEN) $(WINDRES) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(CPPFLAGS) -DWINDRES_PREPROC -i $< -o $@
 
-.mm.o:
-	$(AM_V_CXX) $(OBJCXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
-	  $(CPPFLAGS) $(AM_CXXFLAGS) $(QT_INCLUDES) $(AM_CXXFLAGS) $(PIE_FLAGS) $(CXXFLAGS) -c -o $@ $<
-
 check-symbols: $(bin_PROGRAMS)
-if GLIBC_BACK_COMPAT
-	@echo "Checking glibc back compat..."
-	$(AM_V_at) READELF=$(READELF) CPPFILT=$(CPPFILT) $(top_srcdir)/contrib/devtools/symbol-check.py < $(bin_PROGRAMS)
-endif
+	@echo "Running symbol and dynamic library checks..."
+	$(AM_V_at) $(PYTHON) $(top_srcdir)/contrib/guix/symbol-check.py $(bin_PROGRAMS)
 
 check-security: $(bin_PROGRAMS)
 if HARDEN
 	@echo "Checking binary security..."
-	$(AM_V_at) READELF=$(READELF) OBJDUMP=$(OBJDUMP) $(top_srcdir)/contrib/devtools/security-check.py < $(bin_PROGRAMS)
+	$(AM_V_at) $(PYTHON) $(top_srcdir)/contrib/guix/security-check.py $(bin_PROGRAMS)
 endif
+
+check-stdlib-paths: $(bin_PROGRAMS)
+	@echo "Checking for embedded standard library header paths..."
+	$(AM_V_at) $(PYTHON) $(top_srcdir)/contrib/guix/stdlib-path-check.py $(bin_PROGRAMS)
 
 
 osx_debug: $(bin_PROGRAMS)
 	for i in $(bin_PROGRAMS); do mkdir -p $$i.dSYM/Contents/Resources/DWARF && $(DSYMUTIL_FLAT) -o $$i.dSYM/Contents/Resources/DWARF/$$(basename $$i) $$i &> /dev/null ; done
 
-%.pb.cc %.pb.h: %.proto
-	@test -f $(PROTOC)
-	$(AM_V_GEN) $(PROTOC) --cpp_out=$(@D) --proto_path=$(<D) $<
+libbitcoin_ipc_mpgen_input = \
+  ipc/capnp/echo.capnp \
+  ipc/capnp/init.capnp
+EXTRA_DIST += $(libbitcoin_ipc_mpgen_input)
+%.capnp:
 
-if EMBEDDED_LEVELDB
+# Explicitly list dependencies on generated headers as described in
+# https://www.gnu.org/software/automake/manual/html_node/Built-Sources-Example.html#Recording-Dependencies-manually
+ipc/capnp/libbitcoin_ipc_a-protocol.$(OBJEXT): $(libbitcoin_ipc_mpgen_input:=.h)
+
+if BUILD_MULTIPROCESS
+LIBBITCOIN_IPC=libbitcoin_ipc.a
+libbitcoin_ipc_a_SOURCES = \
+  ipc/capnp/context.h \
+  ipc/capnp/init-types.h \
+  ipc/capnp/protocol.cpp \
+  ipc/capnp/protocol.h \
+  ipc/context.h \
+  ipc/exception.h \
+  ipc/interfaces.cpp \
+  ipc/process.cpp \
+  ipc/process.h \
+  ipc/protocol.h
+libbitcoin_ipc_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
+libbitcoin_ipc_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS) $(LIBMULTIPROCESS_CFLAGS)
+
+include $(MPGEN_PREFIX)/include/mpgen.mk
+libbitcoin_ipc_mpgen_output = \
+  $(libbitcoin_ipc_mpgen_input:=.c++) \
+  $(libbitcoin_ipc_mpgen_input:=.h) \
+  $(libbitcoin_ipc_mpgen_input:=.proxy-client.c++) \
+  $(libbitcoin_ipc_mpgen_input:=.proxy-server.c++) \
+  $(libbitcoin_ipc_mpgen_input:=.proxy-types.c++) \
+  $(libbitcoin_ipc_mpgen_input:=.proxy-types.h) \
+  $(libbitcoin_ipc_mpgen_input:=.proxy.h)
+nodist_libbitcoin_ipc_a_SOURCES = $(libbitcoin_ipc_mpgen_output)
+CLEANFILES += $(libbitcoin_ipc_mpgen_output)
+endif
+
+%.raw.h: %.raw
+	@$(MKDIR_P) $(@D)
+	$(AM_V_GEN) { \
+	 echo "static unsigned const char $(*F)_raw[] = {" && \
+	 $(HEXDUMP) -v -e '8/1 "0x%02x, "' -e '"\n"' $< | $(SED) -e 's/0x  ,//g' && \
+	 echo "};"; \
+	} > "$@.new" && mv -f "$@.new" "$@"
+
+include Makefile.minisketch.include
+
+include Makefile.crc32c.include
 include Makefile.leveldb.include
-endif
 
-if ENABLE_TESTS
+include Makefile.test_util.include
+include Makefile.test_fuzz.include
+
 include Makefile.test.include
-endif
 
 if ENABLE_BENCH
 include Makefile.bench.include
@@ -737,3 +1579,5 @@ endif
 if ENABLE_QT_TESTS
 include Makefile.qttest.include
 endif
+
+include Makefile.univalue.include

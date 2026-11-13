@@ -77,15 +77,6 @@
               <verstretch>0</verstretch>
              </sizepolicy>
             </property>
-            <property name="font">
-             <font>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="styleSheet">
-             <string notr="true">font-weight:bold;</string>
-            </property>
             <property name="text">
              <string>Coin Control Features</string>
             </property>
@@ -107,7 +98,7 @@
              <string notr="true"/>
             </property>
             <property name="text">
-             <string>Inputs...</string>
+             <string>Inputs…</string>
             </property>
             <property name="autoDefault">
              <bool>false</bool>
@@ -126,15 +117,6 @@
           </item>
           <item>
            <widget class="QLabel" name="labelCoinControlInsuffFunds">
-            <property name="font">
-             <font>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="styleSheet">
-             <string notr="true">font-weight:bold;</string>
-            </property>
             <property name="text">
              <string>Insufficient funds!</string>
             </property>
@@ -201,6 +183,9 @@
              </property>
              <item>
               <layout class="QFormLayout" name="formLayoutCoinControl1">
+               <property name="labelAlignment">
+                <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+               </property>
                <property name="horizontalSpacing">
                 <number>10</number>
                </property>
@@ -218,12 +203,6 @@
                </property>
                <item row="0" column="0">
                 <widget class="QLabel" name="labelCoinControlQuantityText">
-                 <property name="font">
-                  <font>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
                  <property name="text">
                   <string>Quantity:</string>
                  </property>
@@ -253,12 +232,6 @@
                </item>
                <item row="1" column="0">
                 <widget class="QLabel" name="labelCoinControlBytesText">
-                 <property name="font">
-                  <font>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
                  <property name="text">
                   <string>Bytes:</string>
                  </property>
@@ -301,12 +274,6 @@
                </property>
                <item row="0" column="0">
                 <widget class="QLabel" name="labelCoinControlAmountText">
-                 <property name="font">
-                  <font>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
                  <property name="text">
                   <string>Amount:</string>
                  </property>
@@ -325,35 +292,6 @@
                  </property>
                  <property name="text">
                   <string notr="true">0.00 DASH</string>
-                 </property>
-                 <property name="textInteractionFlags">
-                  <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="0">
-                <widget class="QLabel" name="labelCoinControlLowOutputText">
-                 <property name="font">
-                  <font>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Dust:</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="1">
-                <widget class="QLabel" name="labelCoinControlLowOutput">
-                 <property name="cursor">
-                  <cursorShape>IBeamCursor</cursorShape>
-                 </property>
-                 <property name="contextMenuPolicy">
-                  <enum>Qt::ActionsContextMenu</enum>
-                 </property>
-                 <property name="text">
-                  <string notr="true">no</string>
                  </property>
                  <property name="textInteractionFlags">
                   <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
@@ -381,12 +319,6 @@
                </property>
                <item row="0" column="0">
                 <widget class="QLabel" name="labelCoinControlFeeText">
-                 <property name="font">
-                  <font>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
                  <property name="text">
                   <string>Fee:</string>
                  </property>
@@ -415,6 +347,9 @@
              </item>
              <item>
               <layout class="QFormLayout" name="formLayoutCoinControl4">
+               <property name="labelAlignment">
+                <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+               </property>
                <property name="horizontalSpacing">
                 <number>10</number>
                </property>
@@ -432,12 +367,6 @@
                </property>
                <item row="0" column="0">
                 <widget class="QLabel" name="labelCoinControlAfterFeeText">
-                 <property name="font">
-                  <font>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
                  <property name="text">
                   <string>After Fee:</string>
                  </property>
@@ -464,12 +393,6 @@
                </item>
                <item row="1" column="0">
                 <widget class="QLabel" name="labelCoinControlChangeText">
-                 <property name="font">
-                  <font>
-                   <weight>75</weight>
-                   <bold>true</bold>
-                  </font>
-                 </property>
                  <property name="text">
                   <string>Change:</string>
                  </property>
@@ -714,15 +637,6 @@
                   <verstretch>0</verstretch>
                  </sizepolicy>
                 </property>
-                <property name="font">
-                 <font>
-                  <weight>75</weight>
-                  <bold>true</bold>
-                 </font>
-                </property>
-                <property name="styleSheet">
-                 <string notr="true">font-weight:bold;</string>
-                </property>
                 <property name="text">
                  <string>Transaction Fee:</string>
                 </property>
@@ -738,7 +652,7 @@
               <item>
                <widget class="QPushButton" name="buttonChooseFee">
                 <property name="text">
-                 <string>Choose...</string>
+                 <string>Choose…</string>
                 </property>
                </widget>
               </item>
@@ -761,12 +675,6 @@
              <widget class="QLabel" name="fallbackFeeWarningLabel">
               <property name="toolTip">
                <string>Using the fallbackfee can result in sending a transaction that will take several hours or days (or never) to confirm. Consider choosing your fee manually or wait until you have validated the complete chain.</string>
-              </property>
-              <property name="font">
-              <font>
-                  <weight>75</weight>
-                  <bold>true</bold>
-              </font>
               </property>
               <property name="text">
                <string>Note: Not enough data for fee estimation, using the fallback fee instead.</string>
@@ -807,7 +715,7 @@
           <item>
            <widget class="QPushButton" name="buttonMinimizeFee">
             <property name="toolTip">
-             <string>collapse fee-settings</string>
+             <string>Hide transaction fee settings</string>
             </property>
             <property name="text">
              <string>Hide</string>
@@ -853,8 +761,11 @@
                <property name="spacing">
                 <number>6</number>
                </property>
+               <property name="topMargin">
+                <number>3</number>
+               </property>
                <item>
-                <layout class="QHBoxLayout" name="horizontalLayoutFee13">
+                <layout class="QHBoxLayout" name="horizontalLayoutFee13" stretch="0,0,1">
                  <item>
                   <widget class="QLabel" name="labelCustomPerKilobyte">
                    <property name="toolTip">
@@ -886,28 +797,15 @@
                <item>
                 <layout class="QHBoxLayout" name="horizontalLayoutFee8">
                  <item>
-                  <widget class="QCheckBox" name="checkBoxMinimumFee">
-                   <property name="toolTip">
-                    <string>Paying only the minimum fee is just fine as long as there is less transaction volume than space in the blocks.&lt;br /&gt;But be aware that this can end up in a never confirming transaction once there is more demand for dash transactions than the network can process.</string>
-                   </property>
-                   <property name="text">
-                    <string/>
-                   </property>
-                  </widget>
-                 </item>
-                 <item>
-                  <widget class="QLabel" name="labelMinFeeWarning">
+                  <widget class="QLabel" name="labelCustomFeeWarning">
                    <property name="enabled">
                     <bool>true</bool>
                    </property>
                    <property name="toolTip">
-                    <string>Paying only the minimum fee is just fine as long as there is less transaction volume than space in the blocks.&lt;br /&gt;But be aware that this can end up in a never confirming transaction once there is more demand for dash transactions than the network can process.</string>
+                    <string>When there is less transaction volume than space in the blocks, miners as well as relaying nodes may enforce a minimum fee. Paying only this minimum fee is just fine, but be aware that this can result in a never confirming transaction once there is more demand for dash transactions than the network can process.</string>
                    </property>
                    <property name="text">
-                    <string>(read the tooltip)</string>
-                   </property>
-                   <property name="margin">
-                    <number>5</number>
+                    <string>A too low fee might result in a never confirming transaction (read the tooltip)</string>
                    </property>
                   </widget>
                  </item>
@@ -930,6 +828,12 @@
              </item>
              <item row="0" column="0">
               <layout class="QVBoxLayout" name="verticalLayoutFee4" stretch="0,1">
+               <property name="topMargin">
+                <number>20</number>
+               </property>
+               <property name="bottomMargin">
+                <number>3</number>
+               </property>
                <item>
                 <widget class="QRadioButton" name="radioSmartFee">
                  <property name="text">
@@ -960,6 +864,9 @@
              </item>
              <item row="1" column="0">
               <layout class="QVBoxLayout" name="verticalLayoutFee9" stretch="0,1">
+               <property name="topMargin">
+                <number>30</number>
+               </property>
                <item>
                 <widget class="QRadioButton" name="radioCustomFee">
                  <property name="text">
@@ -991,7 +898,10 @@
                 <number>6</number>
                </property>
                <property name="topMargin">
-                <number>2</number>
+                <number>0</number>
+               </property>
+               <property name="bottomMargin">
+                <number>3</number>
                </property>
                <item>
                 <layout class="QHBoxLayout" name="horizontalLayoutFee12">
@@ -999,9 +909,6 @@
                   <widget class="QLabel" name="labelSmartFee">
                    <property name="text">
                     <string/>
-                   </property>
-                   <property name="margin">
-                    <number>2</number>
                    </property>
                   </widget>
                  </item>
@@ -1015,10 +922,7 @@
                  <item>
                   <widget class="QLabel" name="labelSmartFee2">
                    <property name="text">
-                    <string>(Smart fee not initialized yet. This usually takes a few blocks...)</string>
-                   </property>
-                   <property name="margin">
-                    <number>2</number>
+                    <string>(Smart fee not initialized yet. This usually takes a few blocks…)</string>
                    </property>
                   </widget>
                  </item>
@@ -1046,23 +950,7 @@
                      <property name="text">
                       <string>Confirmation time target:</string>
                      </property>
-                     <property name="margin">
-                      <number>2</number>
-                     </property>
                     </widget>
-                   </item>
-                   <item>
-                    <spacer name="verticalSpacer_3">
-                     <property name="orientation">
-                      <enum>Qt::Vertical</enum>
-                     </property>
-                     <property name="sizeHint" stdset="0">
-                      <size>
-                       <width>1</width>
-                       <height>1</height>
-                      </size>
-                     </property>
-                    </spacer>
                    </item>
                   </layout>
                  </item>
@@ -1211,23 +1099,7 @@
         <number>3</number>
        </property>
        <item>
-        <widget class="QCheckBox" name="checkUsePrivateSend">
-         <property name="minimumSize">
-          <size>
-           <width>95</width>
-           <height>0</height>
-          </size>
-         </property>
-         <property name="text">
-          <string>PrivateSend</string>
-         </property>
-         <property name="checked">
-          <bool>false</bool>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QLabel" name="label">
+        <widget class="QLabel" name="labelBalanceName">
          <property name="text">
           <string>Balance:</string>
          </property>
@@ -1236,7 +1108,7 @@
        <item>
         <widget class="QLabel" name="labelBalance">
          <property name="sizePolicy">
-          <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+          <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
            <horstretch>0</horstretch>
            <verstretch>0</verstretch>
           </sizepolicy>
@@ -1262,12 +1134,12 @@
   <customwidget>
    <class>QValidatedLineEdit</class>
    <extends>QLineEdit</extends>
-   <header>qvalidatedlineedit.h</header>
+   <header>qt/qvalidatedlineedit.h</header>
   </customwidget>
   <customwidget>
    <class>BitcoinAmountField</class>
    <extends>QLineEdit</extends>
-   <header>bitcoinamountfield.h</header>
+   <header>qt/bitcoinamountfield.h</header>
    <container>1</container>
   </customwidget>
  </customwidgets>

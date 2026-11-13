@@ -1,5 +1,9 @@
-#ifndef TRAFFICGRAPHDATATESTS_H
-#define TRAFFICGRAPHDATATESTS_H
+// Copyright (c) 2017-2023 The Dash Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#ifndef BITCOIN_QT_TEST_TRAFFICGRAPHDATATESTS_H
+#define BITCOIN_QT_TEST_TRAFFICGRAPHDATATESTS_H
 
 #include <QObject>
 #include <QTest>
@@ -20,4 +24,4 @@ private Q_SLOTS:
 };
 
 
-#endif // TRAFFICGRAPHDATATESTS_H
+#endif // BITCOIN_QT_TEST_TRAFFICGRAPHDATATESTS_H

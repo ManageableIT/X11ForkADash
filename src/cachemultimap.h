@@ -1,18 +1,18 @@
-// Copyright (c) 2014-2019 The Dash Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef CACHEMULTIMAP_H_
-#define CACHEMULTIMAP_H_
+#ifndef BITCOIN_CACHEMULTIMAP_H
+#define BITCOIN_CACHEMULTIMAP_H
 
 #include <cstddef>
 #include <map>
 #include <list>
 #include <set>
 
-#include "serialize.h"
+#include <serialize.h>
 
-#include "cachemap.h"
+#include <cachemap.h>
 
 /**
  * Map like container that keeps the N most recently added items
@@ -21,27 +21,27 @@ template<typename K, typename V, typename Size = uint32_t>
 class CacheMultiMap
 {
 public:
-    typedef Size size_type;
+    using size_type = Size;
 
-    typedef CacheItem<K,V> item_t;
+    using item_t = CacheItem<K,V>;
 
-    typedef std::list<item_t> list_t;
+    using list_t = std::list<item_t>;
 
-    typedef typename list_t::iterator list_it;
+    using list_it = typename list_t::iterator;
 
-    typedef typename list_t::const_iterator list_cit;
+    using list_cit = typename list_t::const_iterator;
 
-    typedef std::map<V,list_it> it_map_t;
+    using it_map_t = std::map<V,list_it>;
 
-    typedef typename it_map_t::iterator it_map_it;
+    using it_map_it = typename it_map_t::iterator;
 
-    typedef typename it_map_t::const_iterator it_map_cit;
+    using it_map_cit = typename it_map_t::const_iterator;
 
-    typedef std::map<K, it_map_t> map_t;
+    using map_t = std::map<K, it_map_t>;
 
-    typedef typename map_t::iterator map_it;
+    using map_it = typename map_t::iterator;
 
-    typedef typename map_t::const_iterator map_cit;
+    using map_cit = typename map_t::const_iterator;
 
 private:
     size_type nMaxSize;
@@ -51,13 +51,13 @@ private:
     map_t mapIndex;
 
 public:
-    CacheMultiMap(size_type nMaxSizeIn = 0)
+    explicit CacheMultiMap(size_type nMaxSizeIn = 0)
         : nMaxSize(nMaxSizeIn),
           listItems(),
           mapIndex()
     {}
 
-    CacheMultiMap(const CacheMap<K,V>& other)
+    explicit CacheMultiMap(const CacheMap<K,V>& other)
         : nMaxSize(other.nMaxSize),
           listItems(other.listItems),
           mapIndex()
@@ -150,10 +150,10 @@ public:
         if(mit == mapIndex.end()) {
             return;
         }
-        it_map_t& mapIt = mit->second;
+        const it_map_t& mapIt = mit->second;
 
-        for(it_map_it it = mapIt.begin(); it != mapIt.end(); ++it) {
-            listItems.erase(it->second);
+        for (const auto& it : mapIt) {
+            listItems.erase(it.second);
         }
 
         mapIndex.erase(mit);
@@ -192,16 +192,10 @@ public:
         return *this;
     }
 
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
+    SERIALIZE_METHODS(CacheMultiMap, obj)
     {
-        READWRITE(nMaxSize);
-        READWRITE(listItems);
-        if(ser_action.ForRead()) {
-            RebuildIndex();
-        }
+        READWRITE(obj.nMaxSize, obj.listItems);
+        SER_READ(obj, obj.RebuildIndex());
     }
 
 private:
@@ -245,4 +239,4 @@ private:
     }
 };
 
-#endif /* CACHEMULTIMAP_H_ */
+#endif // BITCOIN_CACHEMULTIMAP_H

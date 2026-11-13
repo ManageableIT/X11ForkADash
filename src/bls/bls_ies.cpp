@@ -1,23 +1,21 @@
-// Copyright (c) 2018 The Dash Core developers
+// Copyright (c) 2018-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "bls_ies.h"
+#include <bls/bls_ies.h>
 
-#include "hash.h"
-#include "random.h"
-#include "streams.h"
+#include <hash.h>
+#include <random.h>
 
-#include "crypto/aes.h"
+#include <crypto/aes.h>
 
-template <typename Out>
-static bool EncryptBlob(const void* in, size_t inSize, Out& out, const void* symKey, const void* iv)
+static bool EncryptBlob(const void* in, size_t inSize, std::vector<unsigned char>& out, const void* symKey, const void* iv)
 {
     out.resize(inSize);
 
-    AES256CBCEncrypt enc((const unsigned char*)symKey, (const unsigned char*)iv, false);
-    int w = enc.Encrypt((const unsigned char*)in, (int)inSize, (unsigned char*)out.data());
-    return w == (int)inSize;
+    AES256CBCEncrypt enc(reinterpret_cast<const unsigned char*>(symKey), reinterpret_cast<const unsigned char*>(iv), false);
+    int w = enc.Encrypt(reinterpret_cast<const unsigned char*>(in), static_cast<int>(inSize), reinterpret_cast<unsigned char*>(out.data()));
+    return w == static_cast<int>(inSize);
 }
 
 template <typename Out>
@@ -25,67 +23,44 @@ static bool DecryptBlob(const void* in, size_t inSize, Out& out, const void* sym
 {
     out.resize(inSize);
 
-    AES256CBCDecrypt enc((const unsigned char*)symKey, (const unsigned char*)iv, false);
-    int w = enc.Decrypt((const unsigned char*)in, (int)inSize, (unsigned char*)out.data());
-    return w == (int)inSize;
+    AES256CBCDecrypt enc(reinterpret_cast<const unsigned char*>(symKey), reinterpret_cast<const unsigned char*>(iv), false);
+    int w = enc.Decrypt(reinterpret_cast<const unsigned char*>(in), static_cast<int>(inSize), reinterpret_cast<unsigned char*>(out.data()));
+    return w == static_cast<int>(inSize);
 }
 
-bool CBLSIESEncryptedBlob::Encrypt(const CBLSPublicKey& peerPubKey, const void* plainTextData, size_t dataSize)
+uint256 CBLSIESEncryptedBlob::GetIV(size_t idx) const
 {
-    CBLSSecretKey ephemeralSecretKey;
-    ephemeralSecretKey.MakeNewKey();
-    ephemeralPubKey = ephemeralSecretKey.GetPublicKey();
-    GetStrongRandBytes(iv, sizeof(iv));
-
-    CBLSPublicKey pk;
-    if (!pk.DHKeyExchange(ephemeralSecretKey, peerPubKey)) {
-        return false;
+    uint256 iv = ivSeed;
+    for (size_t i = 0; i < idx; i++) {
+        iv = ::SerializeHash(iv);
     }
-
-    std::vector<unsigned char> symKey;
-    pk.GetBuf(symKey);
-    symKey.resize(32);
-
-    return EncryptBlob(plainTextData, dataSize, data, symKey.data(), iv);
+    return iv;
 }
 
-bool CBLSIESEncryptedBlob::Decrypt(const CBLSSecretKey& secretKey, CDataStream& decryptedDataRet) const
+bool CBLSIESEncryptedBlob::Decrypt(size_t idx, const CBLSSecretKey& secretKey, CDataStream& decryptedDataRet) const
 {
     CBLSPublicKey pk;
     if (!pk.DHKeyExchange(secretKey, ephemeralPubKey)) {
         return false;
     }
 
-    std::vector<unsigned char> symKey;
-    pk.GetBuf(symKey);
+    std::vector<unsigned char> symKey = pk.ToByteVector(false);
     symKey.resize(32);
 
-    return DecryptBlob(data.data(), data.size(), decryptedDataRet, symKey.data(), iv);
+    uint256 iv = GetIV(idx);
+    return DecryptBlob(data.data(), data.size(), decryptedDataRet, symKey.data(), iv.begin());
 }
 
-
-bool CBLSIESMultiRecipientBlobs::Encrypt(const std::vector<CBLSPublicKey>& recipients, const BlobVector& _blobs)
+bool CBLSIESEncryptedBlob::IsValid() const
 {
-    if (recipients.size() != _blobs.size()) {
-        return false;
-    }
-
-    InitEncrypt(_blobs.size());
-
-    for (size_t i = 0; i < _blobs.size(); i++) {
-        if (!Encrypt(i, recipients[i], _blobs[i])) {
-            return false;
-        }
-    }
-
-    return true;
+    return ephemeralPubKey.IsValid() && !data.empty() && !ivSeed.IsNull();
 }
 
 void CBLSIESMultiRecipientBlobs::InitEncrypt(size_t count)
 {
     ephemeralSecretKey.MakeNewKey();
     ephemeralPubKey = ephemeralSecretKey.GetPublicKey();
-    GetStrongRandBytes(ivSeed.begin(), ivSeed.size());
+    GetStrongRandBytes({ivSeed.begin(), ivSeed.size()});
 
     uint256 iv = ivSeed;
     ivVector.resize(count);
@@ -105,8 +80,7 @@ bool CBLSIESMultiRecipientBlobs::Encrypt(size_t idx, const CBLSPublicKey& recipi
         return false;
     }
 
-    std::vector<unsigned char> symKey;
-    pk.GetBuf(symKey);
+    std::vector<uint8_t> symKey = pk.ToByteVector(false);
     symKey.resize(32);
 
     return EncryptBlob(blob.data(), blob.size(), blobs[idx], symKey.data(), ivVector[idx].begin());
@@ -123,8 +97,7 @@ bool CBLSIESMultiRecipientBlobs::Decrypt(size_t idx, const CBLSSecretKey& sk, Bl
         return false;
     }
 
-    std::vector<unsigned char> symKey;
-    pk.GetBuf(symKey);
+    std::vector<uint8_t> symKey = pk.ToByteVector(false);
     symKey.resize(32);
 
     uint256 iv = ivSeed;

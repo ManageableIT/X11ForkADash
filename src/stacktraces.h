@@ -1,17 +1,15 @@
-// Copyright (c) 2014-2019 The Dash Core developers
+// Copyright (c) 2014-2021 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef DASH_STACKTRACES_H
-#define DASH_STACKTRACES_H
+#ifndef BITCOIN_STACKTRACES_H
+#define BITCOIN_STACKTRACES_H
 
 #include <string>
 #include <sstream>
 #include <exception>
 
 #include <cxxabi.h>
-
-#include "tinyformat.h"
 
 std::string DemangleSymbol(const std::string& name);
 
@@ -39,4 +37,4 @@ inline std::string GetExceptionWhat(const T& e)
 void RegisterPrettyTerminateHander();
 void RegisterPrettySignalHandlers();
 
-#endif//DASH_STACKTRACES_H
+#endif // BITCOIN_STACKTRACES_H

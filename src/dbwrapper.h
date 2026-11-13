@@ -1,33 +1,59 @@
-// Copyright (c) 2012-2015 The Bitcoin Core developers
+// Copyright (c) 2012-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_DBWRAPPER_H
 #define BITCOIN_DBWRAPPER_H
 
-#include "clientversion.h"
-#include "fs.h"
-#include "serialize.h"
-#include "streams.h"
-#include "util.h"
-#include "utilstrencodings.h"
-#include "version.h"
+#include <assert.h>
+#include <clientversion.h>
+#include <logging.h>
+#include <serialize.h>
+#include <span.h>
+#include <streams.h>
+#include <util/fs.h>
 
-#include <typeindex>
+#include <sys/types.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <leveldb/db.h>
+#include <leveldb/iterator.h>
+#include <leveldb/options.h>
+#include <leveldb/slice.h>
+#include <leveldb/status.h>
 #include <leveldb/write_batch.h>
+#include <map>
+#include <memory>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace leveldb {
+class Env;
+}
 
 static const size_t DBWRAPPER_PREALLOC_KEY_SIZE = 64;
 static const size_t DBWRAPPER_PREALLOC_VALUE_SIZE = 1024;
 
+inline auto CharCast(const std::byte* data) { return reinterpret_cast<const char*>(data); }
+
 class dbwrapper_error : public std::runtime_error
 {
 public:
-    dbwrapper_error(const std::string& msg) : std::runtime_error(msg) {}
+    explicit dbwrapper_error(const std::string& msg) : std::runtime_error(msg) {}
 };
 
 class CDBWrapper;
+
+namespace dbwrapper {
+    using leveldb::DestroyDB;
+}
 
 /** These should be considered an implementation detail of the specific database.
  */
@@ -54,16 +80,16 @@ private:
     const CDBWrapper &parent;
     leveldb::WriteBatch batch;
 
-    CDataStream ssKey;
+    DataStream ssKey{};
     CDataStream ssValue;
 
-    size_t size_estimate;
+    size_t size_estimate{0};
 
 public:
     /**
-     * @param[in] parent    CDBWrapper that this batch is to be submitted to
+     * @param[in] _parent    CDBWrapper that this batch is to be submitted to
      */
-    CDBBatch(const CDBWrapper &_parent) : parent(_parent), ssKey(SER_DISK, CLIENT_VERSION), ssValue(SER_DISK, CLIENT_VERSION), size_estimate(0) { };
+    explicit CDBBatch(const CDBWrapper& _parent) : parent(_parent), ssValue(SER_DISK, CLIENT_VERSION) {};
 
     void Clear()
     {
@@ -81,14 +107,14 @@ public:
     }
 
     template <typename V>
-    void Write(const CDataStream& _ssKey, const V& value)
+    void Write(const DataStream& _ssKey, const V& value)
     {
-        leveldb::Slice slKey(_ssKey.data(), _ssKey.size());
+        leveldb::Slice slKey(CharCast(_ssKey.data()), _ssKey.size());
 
         ssValue.reserve(DBWRAPPER_PREALLOC_VALUE_SIZE);
         ssValue << value;
         ssValue.Xor(dbwrapper_private::GetObfuscateKey(parent));
-        leveldb::Slice slValue(ssValue.data(), ssValue.size());
+        leveldb::Slice slValue(CharCast(ssValue.data()), ssValue.size());
 
         batch.Put(slKey, slValue);
         // - varint: key length (1 byte up to 127B, 2 bytes up to 16383B, ...)
@@ -109,8 +135,8 @@ public:
         ssKey.clear();
     }
 
-    void Erase(const CDataStream& _ssKey) {
-        leveldb::Slice slKey(_ssKey.data(), _ssKey.size());
+    void Erase(const DataStream& _ssKey) {
+        leveldb::Slice slKey(CharCast(_ssKey.data()), _ssKey.size());
 
         batch.Delete(slKey);
         // - byte: header
@@ -139,19 +165,19 @@ public:
         parent(_parent), piter(_piter) { };
     ~CDBIterator();
 
-    bool Valid();
+    bool Valid() const;
 
     void SeekToFirst();
 
     template<typename K> void Seek(const K& key) {
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        DataStream ssKey{};
         ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey << key;
         Seek(ssKey);
     }
 
-    void Seek(const CDataStream& ssKey) {
-        leveldb::Slice slKey(ssKey.data(), ssKey.size());
+    void Seek(const DataStream& ssKey) {
+        leveldb::Slice slKey(CharCast(ssKey.data()), ssKey.size());
         piter->Seek(slKey);
     }
 
@@ -159,7 +185,7 @@ public:
 
     template<typename K> bool GetKey(K& key) {
         try {
-            CDataStream ssKey = GetKey();
+            DataStream ssKey = GetKey();
             ssKey >> key;
         } catch (const std::exception&) {
             return false;
@@ -167,9 +193,9 @@ public:
         return true;
     }
 
-    CDataStream GetKey() {
+    DataStream GetKey() {
         leveldb::Slice slKey = piter->key();
-        return CDataStream(slKey.data(), slKey.data() + slKey.size(), SER_DISK, CLIENT_VERSION);
+        return DataStream{MakeByteSpan(slKey)};
     }
 
     unsigned int GetKeySize() {
@@ -179,7 +205,7 @@ public:
     template<typename V> bool GetValue(V& value) {
         leveldb::Slice slValue = piter->value();
         try {
-            CDataStream ssValue(slValue.data(), slValue.data() + slValue.size(), SER_DISK, CLIENT_VERSION);
+            CDataStream ssValue{MakeByteSpan(slValue), SER_DISK, CLIENT_VERSION};
             ssValue.Xor(dbwrapper_private::GetObfuscateKey(parent));
             ssValue >> value;
         } catch (const std::exception&) {
@@ -187,11 +213,6 @@ public:
         }
         return true;
     }
-
-    unsigned int GetValueSize() {
-        return piter->value().size();
-    }
-
 };
 
 class CDBWrapper
@@ -219,6 +240,9 @@ private:
     //! the database itself
     leveldb::DB* pdb;
 
+    //! the name of this database
+    std::string m_name;
+
     //! a key used for optional XOR-obfuscation of the database
     std::vector<unsigned char> obfuscate_key;
 
@@ -229,6 +253,12 @@ private:
     static const unsigned int OBFUSCATE_KEY_NUM_BYTES;
 
     std::vector<unsigned char> CreateObfuscateKey() const;
+
+    //! path to filesystem storage
+    const fs::path m_path;
+
+    //! whether or not the database resides in memory
+    bool m_is_memory;
 
 public:
     /**
@@ -242,18 +272,21 @@ public:
     CDBWrapper(const fs::path& path, size_t nCacheSize, bool fMemory = false, bool fWipe = false, bool obfuscate = false);
     ~CDBWrapper();
 
+    CDBWrapper(const CDBWrapper&) = delete;
+    CDBWrapper& operator=(const CDBWrapper&) = delete;
+
     template <typename K>
     bool ReadDataStream(const K& key, CDataStream& ssValue) const
     {
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        DataStream ssKey{};
         ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey << key;
         return ReadDataStream(ssKey, ssValue);
     }
 
-    bool ReadDataStream(const CDataStream& ssKey, CDataStream& ssValue) const
+    bool ReadDataStream(const DataStream& ssKey, CDataStream& ssValue) const
     {
-        leveldb::Slice slKey(ssKey.data(), ssKey.size());
+        leveldb::Slice slKey(CharCast(ssKey.data()), ssKey.size());
 
         std::string strValue;
         leveldb::Status status = pdb->Get(readoptions, slKey, &strValue);
@@ -263,7 +296,7 @@ public:
             LogPrintf("LevelDB read failure: %s\n", status.ToString());
             dbwrapper_private::HandleError(status);
         }
-        CDataStream ssValueTmp(strValue.data(), strValue.data() + strValue.size(), SER_DISK, CLIENT_VERSION);
+        CDataStream ssValueTmp{MakeByteSpan(strValue), SER_DISK, CLIENT_VERSION};
         ssValueTmp.Xor(obfuscate_key);
         ssValue = std::move(ssValueTmp);
         return true;
@@ -272,14 +305,14 @@ public:
     template <typename K, typename V>
     bool Read(const K& key, V& value) const
     {
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        DataStream ssKey{};
         ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey << key;
         return Read(ssKey, value);
     }
 
     template <typename V>
-    bool Read(const CDataStream& ssKey, V& value) const
+    bool Read(const DataStream& ssKey, V& value) const
     {
         CDataStream ssValue(SER_DISK, CLIENT_VERSION);
         if (!ReadDataStream(ssKey, ssValue)) {
@@ -302,18 +335,26 @@ public:
         return WriteBatch(batch, fSync);
     }
 
+    //! @returns filesystem path to the on-disk data.
+    std::optional<fs::path> StoragePath() {
+        if (m_is_memory) {
+            return {};
+        }
+        return m_path;
+    }
+
     template <typename K>
     bool Exists(const K& key) const
     {
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        DataStream ssKey{};
         ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey << key;
         return Exists(ssKey);
     }
 
-    bool Exists(const CDataStream& key) const
+    bool Exists(const DataStream& key) const
     {
-        leveldb::Slice slKey(key.data(), key.size());
+        leveldb::Slice slKey(CharCast(key.data()), key.size());
 
         std::string strValue;
         leveldb::Status status = pdb->Get(readoptions, slKey, &strValue);
@@ -336,17 +377,8 @@ public:
 
     bool WriteBatch(CDBBatch& batch, bool fSync = false);
 
-    // not available for LevelDB; provide for compatibility with BDB
-    bool Flush()
-    {
-        return true;
-    }
-
-    bool Sync()
-    {
-        CDBBatch batch(*this);
-        return WriteBatch(batch, true);
-    }
+    // Get an estimate of LevelDB memory usage (in bytes).
+    size_t DynamicMemoryUsage() const;
 
     CDBIterator *NewIterator()
     {
@@ -361,21 +393,26 @@ public:
     template<typename K>
     size_t EstimateSize(const K& key_begin, const K& key_end) const
     {
-        CDataStream ssKey1(SER_DISK, CLIENT_VERSION), ssKey2(SER_DISK, CLIENT_VERSION);
+        DataStream ssKey1{}, ssKey2{};
         ssKey1.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey2.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey1 << key_begin;
         ssKey2 << key_end;
-        leveldb::Slice slKey1(ssKey1.data(), ssKey1.size());
-        leveldb::Slice slKey2(ssKey2.data(), ssKey2.size());
+        leveldb::Slice slKey1(CharCast(ssKey1.data()), ssKey1.size());
+        leveldb::Slice slKey2(CharCast(ssKey2.data()), ssKey2.size());
         uint64_t size = 0;
         leveldb::Range range(slKey1, slKey2);
         pdb->GetApproximateSizes(&range, 1, &size);
         return size;
     }
 
+    void CompactFull() const
+    {
+        pdb->CompactRange(nullptr, nullptr);
+    }
+
     /**
-     * Compact a certain range of keys in the database.
+     * Compact a specific range of keys in the database.
      */
     template<typename K>
     void CompactRange(const K& key_begin, const K& key_end) const
@@ -385,16 +422,10 @@ public:
         ssKey2.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey1 << key_begin;
         ssKey2 << key_end;
-        leveldb::Slice slKey1(ssKey1.data(), ssKey1.size());
-        leveldb::Slice slKey2(ssKey2.data(), ssKey2.size());
+        leveldb::Slice slKey1(CharCast(ssKey1.data()), ssKey1.size());
+        leveldb::Slice slKey2(CharCast(ssKey2.data()), ssKey2.size());
         pdb->CompactRange(&slKey1, &slKey2);
     }
-
-    void CompactFull() const
-    {
-        pdb->CompactRange(nullptr, nullptr);
-    }
-
 };
 
 template<typename CDBTransaction>
@@ -411,13 +442,12 @@ private:
     // is advanced.
     typename CDBTransaction::WritesMap::iterator transactionIt;
     std::unique_ptr<ParentIterator> parentIt;
-    CDataStream parentKey;
+    DataStream parentKey;
     bool curIsParent{false};
 
 public:
-    CDBTransactionIterator(CDBTransaction& _transaction) :
-            transaction(_transaction),
-            parentKey(SER_DISK, CLIENT_VERSION)
+    explicit CDBTransactionIterator(CDBTransaction& _transaction) :
+            transaction(_transaction)
     {
         transactionIt = transaction.writes.end();
         parentIt = std::unique_ptr<ParentIterator>(transaction.parent.NewIterator());
@@ -435,7 +465,7 @@ public:
         Seek(CDBTransaction::KeyToDataStream(key));
     }
 
-    void Seek(const CDataStream& ssKey) {
+    void Seek(const DataStream& ssKey) {
         transactionIt = transaction.writes.lower_bound(ssKey);
         parentIt->Seek(ssKey);
         SkipDeletedAndOverwritten();
@@ -467,30 +497,18 @@ public:
             return false;
         }
 
-        if (curIsParent) {
-            try {
-                // TODO try to avoid this copy (we need a stream that allows reading from external buffers)
-                CDataStream ssKey = parentKey;
-                ssKey >> key;
-            } catch (const std::exception&) {
-                return false;
-            }
-            return true;
-        } else {
-            try {
-                // TODO try to avoid this copy (we need a stream that allows reading from external buffers)
-                CDataStream ssKey = transactionIt->first;
-                ssKey >> key;
-            } catch (const std::exception&) {
-                return false;
-            }
-            return true;
+        try {
+            // TODO try to avoid copy transactionIt->first (we need a stream that allows reading from external buffers)
+            (curIsParent ? parentKey : DataStream{transactionIt->first}) >> key;
+        } catch (const std::exception&) {
+            return false;
         }
+        return true;
     }
 
-    CDataStream GetKey() {
+    DataStream GetKey() {
         if (!Valid()) {
-            return CDataStream(SER_DISK, CLIENT_VERSION);
+            return DataStream{};
         }
         if (curIsParent) {
             return parentKey;
@@ -558,21 +576,21 @@ protected:
     ssize_t memoryUsage{0}; // signed, just in case we made an error in the calculations so that we don't get an overflow
 
     struct DataStreamCmp {
-        static bool less(const CDataStream& a, const CDataStream& b) {
+        static bool less(const DataStream& a, const DataStream& b) {
             return std::lexicographical_compare(
                     (const uint8_t*)a.data(), (const uint8_t*)a.data() + a.size(),
                     (const uint8_t*)b.data(), (const uint8_t*)b.data() + b.size());
         }
-        bool operator()(const CDataStream& a, const CDataStream& b) const {
+        bool operator()(const DataStream& a, const DataStream& b) const {
             return less(a, b);
         }
     };
 
     struct ValueHolder {
         size_t memoryUsage;
-        ValueHolder(size_t _memoryUsage) : memoryUsage(_memoryUsage) {}
+        explicit ValueHolder(size_t _memoryUsage) : memoryUsage(_memoryUsage) {}
         virtual ~ValueHolder() = default;
-        virtual void Write(const CDataStream& ssKey, CommitTarget &parent) = 0;
+        virtual void Write(const DataStream& ssKey, CommitTarget &parent) = 0;
     };
     typedef std::unique_ptr<ValueHolder> ValueHolderPtr;
 
@@ -580,7 +598,7 @@ protected:
     struct ValueHolderImpl : ValueHolder {
         ValueHolderImpl(const V &_value, size_t _memoryUsage) : ValueHolder(_memoryUsage), value(_value) {}
 
-        virtual void Write(const CDataStream& ssKey, CommitTarget &commitTarget) {
+        virtual void Write(const DataStream& ssKey, CommitTarget &commitTarget) override {
             // we're moving the value instead of copying it. This means that Write() can only be called once per
             // ValueHolderImpl instance. Commit() clears the write maps, so this ok.
             commitTarget.Write(ssKey, std::move(value));
@@ -589,15 +607,15 @@ protected:
     };
 
     template<typename K>
-    static CDataStream KeyToDataStream(const K& key) {
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    static DataStream KeyToDataStream(const K& key) {
+        DataStream ssKey{};
         ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey << key;
         return ssKey;
     }
 
-    typedef std::map<CDataStream, ValueHolderPtr, DataStreamCmp> WritesMap;
-    typedef std::set<CDataStream, DataStreamCmp> DeletesSet;
+    typedef std::map<DataStream, ValueHolderPtr, DataStreamCmp> WritesMap;
+    typedef std::set<DataStream, DataStreamCmp> DeletesSet;
 
     WritesMap writes;
     DeletesSet deletes;
@@ -611,8 +629,8 @@ public:
     }
 
     template <typename V>
-    void Write(const CDataStream& ssKey, const V& v) {
-        auto valueMemoryUsage = ::GetSerializeSize(v, SER_DISK, CLIENT_VERSION);
+    void Write(const DataStream& ssKey, const V& v) {
+        auto valueMemoryUsage = ::GetSerializeSize(v, CLIENT_VERSION);
 
         if (deletes.erase(ssKey)) {
             memoryUsage -= ssKey.size();
@@ -632,7 +650,7 @@ public:
     }
 
     template <typename V>
-    bool Read(const CDataStream& ssKey, V& value) {
+    bool Read(const DataStream& ssKey, V& value) {
         if (deletes.count(ssKey)) {
             return false;
         }
@@ -650,12 +668,28 @@ public:
         return parent.Read(ssKey, value);
     }
 
+    /** Read a value only if it is present in this transaction's write set. */
+    template <typename K, typename V>
+    bool ReadPending(const K& key, V& value) {
+        const DataStream ssKey = KeyToDataStream(key);
+        auto it = writes.find(ssKey);
+        if (it == writes.end()) {
+            return false;
+        }
+        auto* impl = dynamic_cast<ValueHolderImpl<V>*>(it->second.get());
+        if (!impl) {
+            throw std::runtime_error("ReadPending called with V != previously written type");
+        }
+        value = impl->value;
+        return true;
+    }
+
     template <typename K>
     bool Exists(const K& key) {
         return Exists(KeyToDataStream(key));
     }
 
-    bool Exists(const CDataStream& ssKey) {
+    bool Exists(const DataStream& ssKey) {
         if (deletes.count(ssKey)) {
             return false;
         }
@@ -672,7 +706,7 @@ public:
         return Erase(KeyToDataStream(key));
     }
 
-    void Erase(const CDataStream& ssKey) {
+    void Erase(const DataStream& ssKey) {
         auto it = writes.find(ssKey);
         if (it != writes.end()) {
             memoryUsage -= ssKey.size() + it->second->memoryUsage;
@@ -699,7 +733,7 @@ public:
         Clear();
     }
 
-    bool IsClean() {
+    bool IsClean() const {
         return writes.empty() && deletes.empty();
     }
 
@@ -708,7 +742,7 @@ public:
             // something went wrong when we accounted/calculated used memory...
             static volatile bool didPrint = false;
             if (!didPrint) {
-                LogPrintf("CDBTransaction::%s -- negative memoryUsage (%d)", __func__, memoryUsage);
+                LogPrintf("CDBTransaction::%s -- negative memoryUsage (%d)\n", __func__, memoryUsage);
                 didPrint = true;
             }
             return 0;
@@ -723,5 +757,20 @@ public:
         return std::make_unique<CDBTransactionIterator<CDBTransaction>>(*this);
     }
 };
+
+namespace util {
+struct DbWrapperParams
+{
+    const fs::path path{""};
+    const bool memory{false};
+    const bool wipe{false};
+    const size_t cache_size{1 << 20};
+};
+
+static inline std::unique_ptr<CDBWrapper> MakeDbWrapper(const DbWrapperParams& params)
+{
+    return std::make_unique<CDBWrapper>(params.path, params.cache_size, params.memory, params.wipe);
+}
+} // namespace util
 
 #endif // BITCOIN_DBWRAPPER_H

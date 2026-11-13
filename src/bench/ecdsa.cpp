@@ -1,13 +1,15 @@
-// Copyright (c) 2018 The Dash Core developers
+// Copyright (c) 2018-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "bench.h"
+#include <bench/bench.h>
 
-#include "key.h"
+#include <key.h>
 
-static void ECDSASign(benchmark::State& state)
+static void ECDSASign(benchmark::Bench& bench)
 {
+    ECC_Start();
+
     std::vector<CKey> keys;
     std::vector<uint256> hashes;
     for (size_t i = 0; i < 100; i++) {
@@ -19,15 +21,19 @@ static void ECDSASign(benchmark::State& state)
 
     // Benchmark.
     size_t i = 0;
-    while (state.KeepRunning()) {
+    bench.run([&] {
         std::vector<unsigned char> sig;
         keys[i].Sign(hashes[i], sig);
         i = (i + 1) % keys.size();
-    }
+    });
+
+    ECC_Stop();
 }
 
-static void ECDSAVerify(benchmark::State& state)
+static void ECDSAVerify(benchmark::Bench& bench)
 {
+    ECC_Start();
+
     std::vector<CPubKey> keys;
     std::vector<uint256> hashes;
     std::vector<std::vector<unsigned char>> sigs;
@@ -43,14 +49,18 @@ static void ECDSAVerify(benchmark::State& state)
 
     // Benchmark.
     size_t i = 0;
-    while (state.KeepRunning()) {
+    bench.run([&] {
         keys[i].Verify(hashes[i], sigs[i]);
         i = (i + 1) % keys.size();
-    }
+    });
+
+    ECC_Stop();
 }
 
-static void ECDSAVerify_LargeBlock(benchmark::State& state)
+static void ECDSAVerify_LargeBlock(benchmark::Bench& bench)
 {
+    ECC_Start();
+
     std::vector<CPubKey> keys;
     std::vector<uint256> hashes;
     std::vector<std::vector<unsigned char>> sigs;
@@ -65,13 +75,15 @@ static void ECDSAVerify_LargeBlock(benchmark::State& state)
     }
 
     // Benchmark.
-    while (state.KeepRunning()) {
+    bench.run([&] {
         for (size_t i = 0; i < keys.size(); i++) {
             keys[i].Verify(hashes[i], sigs[i]);
         }
-    }
+    });
+
+    ECC_Stop();
 }
 
-BENCHMARK(ECDSASign)
-BENCHMARK(ECDSAVerify)
-BENCHMARK(ECDSAVerify_LargeBlock)
+BENCHMARK(ECDSASign, benchmark::PriorityLevel::HIGH)
+BENCHMARK(ECDSAVerify, benchmark::PriorityLevel::HIGH)
+BENCHMARK(ECDSAVerify_LargeBlock, benchmark::PriorityLevel::HIGH)

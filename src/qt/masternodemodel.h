@@ -1,0 +1,199 @@
+// Copyright (c) 2021-2026 The Dash Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#ifndef BITCOIN_QT_MASTERNODEMODEL_H
+#define BITCOIN_QT_MASTERNODEMODEL_H
+
+#include <evo/dmn_types.h>
+#include <interfaces/node.h>
+#include <qt/bitcoinunits.h>
+
+#include <QAbstractTableModel>
+#include <QByteArray>
+#include <QHash>
+#include <QIcon>
+#include <QSet>
+#include <QString>
+#include <QStringList>
+
+#include <memory>
+#include <optional>
+#include <tuple>
+#include <vector>
+
+//! Standby dissolutions are signed offline transactions the GUI never keeps;
+//! only the fact that one was written on this computer is remembered.
+namespace MasternodeStandby {
+//! What this computer remembers about a masternode's standby dissolution
+struct StandbyRecord {
+    bool saved{false}; //!< a standby dissolution was written on this computer
+    QString date;      //!< when it was written; only meaningful when `saved`
+};
+
+//! Look up what this computer remembers about `pro_tx_hash`
+StandbyRecord SavedDate(const QString& pro_tx_hash);
+} // namespace MasternodeStandby
+
+class MasternodeEntry
+{
+private:
+    bool m_banned{false};
+    bool m_shared{false};
+    CAmount m_early_penalty{0};
+    uint32_t m_early_period_blocks{0};
+    std::vector<interfaces::MnShare> m_shares;
+    QString m_shares_fingerprint{};
+    QString m_share_addresses{};
+    int32_t m_last_paid_height{0};
+    int32_t m_next_payment_height{0};
+    int32_t m_pose_penalty{0};
+    int32_t m_registered_height{0};
+    interfaces::MnEntryCPtr m_dmn;
+    MnType m_type{MnType::Regular};
+    QByteArray m_service_key{};
+    QString m_collateral_address{};
+    QString m_collateral_outpoint{};
+    QString m_json{};
+    QString m_operator_reward{};
+    QString m_operator_payout_address{};
+    QString m_owner_address{};
+    QString m_payout_address{};
+    QStringList m_payout_addresses{};
+    QString m_protx_hash{};
+    QString m_service{};
+    QString m_type_description{};
+    QString m_voting_address{};
+    std::optional<int32_t> m_collateral_index{};
+    std::optional<int32_t> m_consecutive_payments{};
+    std::optional<int32_t> m_pose_ban_height{};
+    std::optional<int32_t> m_pose_revived_height{};
+    std::optional<QString> m_collateral_hash{};
+    std::optional<QString> m_network_addresses{};
+    std::optional<QString> m_platform_https_addresses{};
+    std::optional<QString> m_platform_node_id{};
+    std::optional<QString> m_platform_p2p_addresses{};
+    std::optional<QString> m_pub_key_operator{};
+    bool m_operator_legacy_scheme{false};
+    uint16_t m_operator_reward_pct{0};
+
+public:
+    explicit MasternodeEntry(const interfaces::MnEntryCPtr& dmn, const QString& collateral_address,
+                             int next_payment_height);
+    ~MasternodeEntry();
+
+    bool isBanned() const { return m_banned; }
+    bool isShared() const { return m_shared; }
+    CAmount earlyPenalty() const { return m_early_penalty; }
+    uint32_t earlyPeriodBlocks() const { return m_early_period_blocks; }
+    const std::vector<interfaces::MnShare>& shares() const { return m_shares; }
+    const QString& shareAddresses() const { return m_share_addresses; }
+    int lastPaidHeight() const { return m_last_paid_height; }
+    int nextPaymentHeight() const { return m_next_payment_height; }
+    int posePenalty() const { return m_pose_penalty; }
+    int registeredHeight() const { return m_registered_height; }
+    MnType type() const { return m_type; }
+    std::optional<int32_t> poseBanHeight() const { return m_pose_ban_height; }
+    std::optional<int32_t> poseRevivedHeight() const { return m_pose_revived_height; }
+    uint16_t operatorRewardPct() const { return m_operator_reward_pct; }
+
+    const CKeyID& keyIdOwnerRaw() const { return m_dmn->getKeyIdOwner(); }
+    const CKeyID& keyIdVotingRaw() const { return m_dmn->getKeyIdVoting(); }
+    const COutPoint& collateralOutpointRaw() const { return m_dmn->getCollateralOutpoint(); }
+    const CScript& scriptOperatorPayoutRaw() const { return m_dmn->getScriptOperatorPayout(); }
+    const CScript& scriptPayoutRaw() const { return m_dmn->getScriptPayout(); }
+    std::vector<CScript> scriptPayoutsRaw() const { return m_dmn->getScriptPayouts(); }
+    const QByteArray& serviceKey() const { return m_service_key; }
+    const QString& collateralAddress() const { return m_collateral_address; }
+    const QString& collateralOutpoint() const { return m_collateral_outpoint; }
+    const QString& operatorReward() const { return m_operator_reward; }
+    const QString& operatorPayoutAddress() const { return m_operator_payout_address; }
+    const QString& ownerAddress() const { return m_owner_address; }
+    const QString& payoutAddress() const { return m_payout_address; }
+    const QStringList& payoutAddresses() const { return m_payout_addresses; }
+    const QString& proTxHash() const { return m_protx_hash; }
+    const QString& service() const { return m_service; }
+    const QString& toJson() const { return m_json; }
+    const QString& typeDescription() const { return m_type_description; }
+    const QString& votingAddress() const { return m_voting_address; }
+    const uint256& proTxHashRaw() const { return m_dmn->getProTxHash(); }
+    std::vector<unsigned char> operatorPubKeyBytes() const;
+    QString operatorPubKey(bool legacy_scheme = false) const;
+    QString coreP2PAddresses() const { return m_network_addresses.value_or(m_service); }
+    QString platformP2PAddresses() const { return m_platform_p2p_addresses.value_or(QString{}); }
+    QString platformHTTPSAddresses() const { return m_platform_https_addresses.value_or(QString{}); }
+    QString platformNodeID() const { return m_platform_node_id.value_or(QString{}); }
+
+    auto toTie() const
+    {
+        // Cover every mutable field rendered by the table/details dialogs or
+        // consumed by an action dialog. Otherwise reconcile() retains an old
+        // MnEntry after a provider update and subsequent edits can overwrite
+        // newer network, payout, voting, or Platform state.
+        return std::tie(m_banned, m_last_paid_height, m_next_payment_height, m_pose_penalty, m_consecutive_payments,
+                        m_pose_ban_height, m_pose_revived_height, m_service_key, m_service, m_operator_reward_pct,
+                        m_operator_reward, m_operator_payout_address, m_payout_address, m_payout_addresses,
+                        m_voting_address, m_pub_key_operator, m_operator_legacy_scheme, m_network_addresses,
+                        m_platform_node_id, m_platform_p2p_addresses, m_platform_https_addresses,
+                        m_shares_fingerprint);
+    }
+    QString toHtml(int current_height = 0, const QSet<int>& my_share_indexes = {},
+                   BitcoinUnits::Unit unit = BitcoinUnits::Unit::DASH) const;
+};
+
+using MasternodeEntryList = std::vector<std::shared_ptr<MasternodeEntry>>;
+
+class MasternodeModel : public QAbstractTableModel
+{
+    Q_OBJECT
+
+private:
+    int m_current_height{0};
+    MasternodeEntryList m_data;
+    QHash<QString, int> m_my_share_counts;
+    QIcon m_icon_banned;
+    QIcon m_icon_enabled;
+
+    bool isValidRow(int row) const { return row >= 0 && row < static_cast<int>(m_data.size()); }
+
+public:
+    enum Column : uint8_t {
+        STATUS,
+        SERVICE,
+        TYPE,
+        POSE,
+        REGISTERED,
+        LAST_PAYMENT,
+        NEXT_PAYMENT,
+        OPERATOR_REWARD,
+        PROTX_HASH,
+        COUNT
+    };
+
+    //! TYPE-column sort/filter value for shared masternodes; distinct from every MnType value
+    //! (shared masternodes are MnType::Regular with a pooled collateral)
+    static constexpr int TYPE_SHARED{-1};
+
+    explicit MasternodeModel(QObject* parent = nullptr);
+    ~MasternodeModel();
+
+    void refreshIcons();
+
+    int rowCount(const QModelIndex& parent = {}) const override;
+    int columnCount(const QModelIndex& parent = {}) const override;
+    QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
+    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
+
+    //! Number of shares this wallet holds the owner key of, per proTx hash;
+    //! shown in the Type column's tooltip
+    void setMyShareCounts(QHash<QString, int>&& counts) { m_my_share_counts = std::move(counts); }
+
+    void append(std::shared_ptr<MasternodeEntry>&& entry);
+    void remove(int row);
+    void reconcile(MasternodeEntryList&& entries);
+    int currentHeight() const { return m_current_height; }
+    void setCurrentHeight(int height) { m_current_height = height; }
+    const MasternodeEntry* getEntryAt(const QModelIndex& index) const;
+};
+
+#endif // BITCOIN_QT_MASTERNODEMODEL_H
